@@ -3,6 +3,7 @@ Organize samples for a sequencing run, and prepare samplesheet file
 
 1. Folder structure:
 
+```text
 samplesheet-tool/
 │
 ├── README.md
@@ -26,4 +27,5 @@ samplesheet-tool/
 │       └── utils.py           # helpers (lanes, hamming, parsing)
 │
 └── tests/                     # optional for now
+```
 
