@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "samplesheet-tool"
+version = "0.1.0"
+description = "CLI tool for validating and generating Illumina BaseSpace SampleSheets for NovaSeq X Plus"
+readme = "README.md"
+requires-python = ">=3.9"
+
+authors = [
+  { name = "Tuo Zhang", email = "taz2008@med.cornell.edu" }
+]
+
+dependencies = [
+  "pandas>=1.5",
+  "openpyxl>=3.1"
+]
+
+[project.scripts]
+samplesheet-tool = "samplesheet_tool.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
