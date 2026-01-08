@@ -20,12 +20,13 @@ samplesheet-tool/
 │       ├── __main__.py        # CLI entry point
 │       ├── context.py         # RunContext (shared state)
 │       ├── io_basespace.py    # read/write BaseSpace template
-│       ├── resolve.py         # index ID → sequence resolution
+│       ├── resolve.py         # index ID -> index sequence resolver
 │       ├── validate.py        # sample ID & index checks
-│       ├── tenx_indexes.py    # 10x index loaders
+│       ├── indexes.py         # index loaders
 │       ├── config.py          # defaults & thresholds
-│       └── utils.py           # helpers (lanes, hamming, parsing)
+│       ├── utils.py           # helpers (lanes, hamming, parsing)
+│       └── io_normalize.py    # rename headers
 │
-└── tests/                     # optional for now
+└── tests/                     # test codes
 ```
 
