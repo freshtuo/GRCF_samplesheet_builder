@@ -1,4 +1,5 @@
 src/samplesheet_tool.egg-info/
 src/samplesheet_tool/__pycache__/
+src/samplesheet_tool/ui/__pycache__/
 tests/data/
 tests/out/
