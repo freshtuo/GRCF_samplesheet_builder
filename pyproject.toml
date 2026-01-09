@@ -14,8 +14,8 @@ authors = [
 ]
 
 dependencies = [
-  "pandas>=1.5",
-  "openpyxl>=3.1"
+  "pandas>=1.5,<3.0",
+  "openpyxl>=3.1,<4.0"
 ]
 
 [project.scripts]
@@ -26,4 +26,9 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.optional-dependencies]
+ui = [
+  "nicegui>=3.4,<4.0"
+]
 
