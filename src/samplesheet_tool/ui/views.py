@@ -3,12 +3,21 @@
 # 
 
 from __future__ import annotations
+
 from nicegui import ui
-from typing import List, Dict, Any
-from samplesheet_tool.ui.state import RunState, LaneStatus, save_plan, load_plan, default_store_dir
-from samplesheet_tool.ui import actions
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 
+from samplesheet_tool.ui.state import (
+    RunState, LaneStatus, Message, 
+    save_plan, load_plan, default_store_dir, 
+    make_sample_uid, split_sample_uid, 
+)
+from samplesheet_tool.ui import actions
+
+# -------------------------
+# small helpers
+# -------------------------
 
 def status_dot(status: LaneStatus) -> str:
     return {
@@ -18,28 +27,17 @@ def status_dot(status: LaneStatus) -> str:
     }[status]
 
 
+# -------------------------
+# toolbar
+# -------------------------
+
 def build_toolbar(state: RunState, refresh_all) -> None:
-    """creates a full-width horizontal toolbar that manages application state (such as the "Index Set") and triggers global UI refreshes."""
+    """creates a full-width horizontal toolbar for global actions."""
     # A full-width row with vertically centered items and 8px (gap-2) spacing
     with ui.row().classes("w-full items-center gap-2"):
         ui.label("SampleSheet Tool (UI MVP)").classes("text-lg font-semibold")
 
         ui.separator().props("vertical")
-
-        # Dropdown for selecting the index set
-        index_set = ui.select(
-            options=["Illumina (mock)", "10x (mock)"],
-            value=state.index_set_name,
-            label="Index Set",
-        ).classes("w-56")
-
-        # Updates state and triggers a refresh of the UI parts
-        def on_index_set_change(e):
-            state.index_set_name = e.value
-            refresh_all()
-
-        # Listen for value changes in the selection
-        index_set.on_value_change(on_index_set_change)
 
         # Standard action buttons
         ui.button("Import Project", on_click=lambda: import_project_dialog(state, refresh_all))
@@ -63,7 +61,10 @@ def build_toolbar(state: RunState, refresh_all) -> None:
 
 
 def import_project_dialog(state: RunState, refresh_all) -> None:
-    """creates a modal popup (dialog) used for entering project data"""
+    """
+    Creates a modal popup (dialog) used for entering project data
+    Mock project import dialog (atomic import later when wired to CLI).
+    """
     with ui.dialog() as dialog, ui.card().classes("w-[520px]"):
         ui.label("Import Project (mock)").classes("text-base font-semibold")
 
@@ -130,12 +131,17 @@ def open_plan_dialog(state: RunState, refresh_all) -> None:
             new_state = load_plan(Path(sel.value))
 
             # Update the current state with the new data
-            state.index_set_name = new_state.index_set_name
+            state.index_tables = new_state.index_tables
+            state.indexes_panel_collapsed = new_state.indexes_panel_collapsed
+            state.indexes_mapping_type = new_state.indexes_mapping_type
+            state.messages = new_state.messages
             state.projects = new_state.projects
             state.selected_project_id = new_state.selected_project_id
             state.lanes = new_state.lanes
+            state.samples_rows_per_page = new_state.samples_rows_per_page
 
             # Close dialog and update the UI display
+            ui.notify("Plan loaded", type="positive")
             dialog.close()
             refresh_all()
 
@@ -163,6 +169,158 @@ def do_export(state: RunState) -> None:
         return
     ui.notify("Exported SampleSheet (mock)", type="positive")
 
+
+# -------------------------
+# Indexes panel
+# -------------------------
+
+def import_mapping_dialog(state: RunState, refresh_all) -> None:
+    """Upload a mapping table (CSV/TSV) and merge into the global mapping table."""
+    with ui.dialog() as dialog, ui.card().classes("w-[720px]"):
+        ui.label("Load mapping table").classes("text-base font-semibold")
+        ui.label(
+            "MVP: upload CSV/TSV with header. dual: index_id,i7,i5 ; single: index_id,sequence"
+        ).classes("text-xs text-gray-500")
+
+        mapping_type = ui.select(
+            options=["dual","single"],
+            value=state.indexes_mapping_type,
+            label="Mapping type (dual: index_id,i7,i5 ; single: index_id,sequence)",
+        ).classes("w-full")
+
+        content_preview = ui.textarea("File preview", placeholder="(upload a file)").props("readonly").classes("w-full")
+        filename_label = ui.label("").classes("text-xs text-gray-500")
+
+        file_buf: Dict[str, str] = {"text": "", "name": ""}
+
+        def on_upload(e):
+            # NiceGUI UploadEvent provides e.content (bytes) and e.name
+            raw = e.content.read().decode("utf-8", errors="replace")
+            file_buf["text"] = raw
+            file_buf["name"] = e.name or "(uploaded)"
+            filename_label.text = f"Selected: {file_buf['name']}"
+            content_preview.value = "\n".join(raw.splitlines()[:20])
+
+        ui.upload(on_upload=on_upload, auto_upload=True, multiple=False).props("accept=.csv,.tsv,.txt")
+
+        with ui.row().classes("justify-end gap-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+            ui.button("Load", on_click=lambda: _do()).props("unelevated")
+
+        def _do():
+            if not file_buf["text"]:
+                ui.notify("Please upload a file", type="warning")
+                return
+
+            state.indexes_mapping_type = mapping_type.value or state.indexes_mapping_type
+
+            ok = actions.import_mapping_table_from_text(
+                state,
+                state.indexes_mapping_type,
+                file_buf["text"],
+                filename=file_buf["name"],
+            )
+            if ok:
+                save_plan(state)
+                dialog.close()
+                refresh_all()
+            else:
+                # errors already go to Messages Panel
+                ui.notify("Mapping table import failed (see Messages)", type="negative")
+
+    dialog.open()
+
+"""
+def build_indexes_panel(state: RunState, refresh_all) -> None:
+    dual_n = len(state.index_tables.dual)
+    single_n = len(state.index_tables.single)
+    total_n = dual_n + single_n
+
+    with ui.card().classes("w-full"):
+        # single expansion as the whole panel
+        with ui.expansion(
+            ##f"Indexes (2 tables, {total_n} IDs)", 
+            f"Indexes", 
+            value=True, 
+        ).classes("w-full").props(
+            'header-class="text-base font-semibold text-left" '
+            'expand-icon="mdi-plus" '
+            'expanded-icon="mdi-minus" '
+            'expand-icon-class="text-primary text-lg" '
+            'expand-icon-toggle'
+        ):
+            # Mapping type selector (required by spec)
+            ui.select(
+                options=["dual", "single"],
+                value=state.indexes_mapping_type,
+                label="Mapping type (dual: index_id,i7,i5 ; single: index_id,sequence)",
+                on_change=lambda e: setattr(state, "indexes_mapping_type", e.value),
+            ).classes("w-full")
+
+            ui.button("Load mapping table…", on_click=lambda: import_mapping_dialog(state, refresh_all)).props("outline").classes("w-full")
+
+            ui.label(f"dual: {dual_n} IDs | single: {single_n} IDs").classes("text-xs text-gray-500")
+"""
+
+def build_indexes_panel(state: RunState, refresh_all) -> None:
+    stats = state.index_tables.stats()
+    total_n = stats["dual_ids"] + stats["single_ids"]
+
+    with ui.card().classes("w-full"):
+        # --- header row ---
+        header = ui.row().classes("w-full items-center justify-between")
+
+        # local open state (collapsed by default)
+        opened = {"v": False}
+
+        with header:
+            ui.label(f"Indexes (2 tables, {total_n} IDs)").classes("text-base font-semibold")
+
+            # triangle button on the right ◀ ▶ ▼
+            tri = ui.button(
+                "▶", on_click=lambda: _toggle()
+            ).props("flat dense").classes(
+                "text-lg font-semibold"
+            ).style("min-width:28px; padding:0 6px;")
+
+        ##ui.separator()
+
+        # --- content ---
+        content = ui.element("div").classes("w-full")
+        content.set_visibility(False)
+
+        def _toggle():
+            opened["v"] = not opened["v"]
+            content.set_visibility(opened["v"])
+            # shape change: ▼ when expanded, ▶ when collapsed
+            tri.text = "▼" if opened["v"] else "▶"
+
+        # Put the real controls inside content
+        with content:
+            mapping_sel = ui.select(
+                options=["dual", "single"],
+                value=state.indexes_mapping_type,
+                label="Mapping type (dual: index_id,i7,i5 ; single: index_id,sequence)",
+            ).classes("w-full")
+
+            def _on_mapping_change(_):
+                state.indexes_mapping_type = mapping_sel.value or state.indexes_mapping_type
+                save_plan(state)
+
+            mapping_sel.on_value_change(_on_mapping_change)
+
+            ui.button(
+                "Load mapping table…",
+                on_click=lambda: import_mapping_dialog(state, refresh_all),
+            ).props("outline").classes("w-full")
+
+            ui.label(f"dual: {stats['dual_ids']} IDs | single: {stats['single_ids']} IDs") \
+              .classes("text-xs text-gray-500")
+
+
+# -------------------------
+# Projects panel
+# -------------------------
 
 def build_project_panel(state: RunState, refresh_all) -> None:
     """Creates a project selection interface that acts as a master-detail controller."""
@@ -194,10 +352,19 @@ def build_project_panel(state: RunState, refresh_all) -> None:
 
     sel.on_value_change(on_change)
 
-    # debug
-    ui.label(f"DEBUG pid={state.selected_project_id} projects={list(state.projects.keys())}").classes("text-xs text-gray-500")
-    ui.label(f"Selected: {state.selected_project_id}").classes("text-xs text-gray-500")
+    p = state.projects[state.selected_project_id]
+    ui.label(f"Samples: {p.n_samples}").classes("text-xs text-gray-600")
+    if p.total_reads_m is not None:
+        ui.label(f"Total reads(M): {p.total_reads_m}").classes("text-xs text-gray-600")
 
+    ## debug
+    ##ui.label(f"DEBUG pid={state.selected_project_id} projects={list(state.projects.keys())}").classes("text-xs text-gray-500")
+    ##ui.label(f"Selected: {state.selected_project_id}").classes("text-xs text-gray-500")
+
+
+# -------------------------
+# Samples panel
+# -------------------------
 
 def build_sample_panel(state: RunState, refresh_all) -> None:
     """creates a data-rich panel that displays samples in a table and allows users to assign them to sequencing lanes."""
@@ -211,34 +378,47 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
 
     # Prepare table rows
     p = state.projects[pid]
-    ui.label(f"DEBUG samples={len(p.samples)}").classes("text-xs text-gray-500") # DEBUG
-    rows = []
+    ##ui.label(f"DEBUG samples={len(p.samples)}").classes("text-xs text-gray-500") # DEBUG
+
+    rows: List[Dict[str, Any]] = []
     for s in p.samples:
         rows.append({
+            "sample_uid": make_sample_uid(s.project_id, s.sample_id), 
+            "project_id": s.project_id, 
             "sample_id": s.sample_id,
             "reads_m": s.reads_m,
             "index_id": s.index_id,
         })
-    ui.label(f"DEBUG rows={len(rows)}").classes("text-xs text-gray-500") # DEBUG
+    ##ui.label(f"DEBUG rows={len(rows)}").classes("text-xs text-gray-500") # DEBUG
 
     columns = [
         {"name": "sample_id", "label": "sample_id", "field": "sample_id", "sortable": True},
         {"name": "reads_m", "label": "reads(M)", "field": "reads_m", "sortable": True},
         {"name": "index_id", "label": "index_id", "field": "index_id", "sortable": True},
     ]
+    ##ui.label("DEBUG sample id of first sample: {}".format(rows[0]["sample_id"])) # DEBUG
 
-    ui.label("DEBUG sample id of first sample: {}".format(rows[0]["sample_id"])) # DEBUG
-    # Create the interactive table
-    table = ui.table(
-        columns=columns, 
-        rows=rows, 
-        row_key="sample_id", 
-        selection="multiple", 
-        pagination={"rowsPerPage": state.samples_rows_per_page}
-    ).classes("w-full")
+    # Table container enforces X/Y-scroll and prevents global page scroll + table fill width
+    with ui.element("div").classes("w-full").style("overflow:auto; max-height: 68vh; width: 100%;"):
+        table = ui.table(
+            columns=columns,
+            rows=rows,
+            row_key="sample_uid",
+            selection="multiple",
+            pagination={"rowsPerPage": state.samples_rows_per_page},
+        ).classes("w-full")
 
-    table.props('dense')
-    table.props(':rows-per-page-options="[25,50,100]"')
+        # Critical: force QTable to expand to container width even if columns are few
+        table.props('table-style="width: 100%;"')
+        # Make the table itself width:100% too (covers some NiceGUI/Quasar combos)
+        table.style("white-space: nowrap; width: 100%;")
+        ##table.style("width: 100%;")
+
+    table.props("dense")
+    table.props("flat")
+    table.props(":rows-per-page-options=\"[20,40,60,80,100]\"")
+    # wrap-cells=false sometimes makes table prefer content width; keep but it's ok with table-style=100%
+    table.props("wrap-cells=false")
 
     # Update rows per page in RunState
     def on_pagination(e):
@@ -266,16 +446,16 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
         table.selected = rows if checked else []
         _update_selected_count()
 
+    # Optional: keep the count updated when user manually ticks checkboxes on the current page
+    # (This depends on NiceGUI version; using a safe trigger by reading table.selected)
+    table.on('selection', lambda _: _update_selected_count())
+
     with ui.row().classes("items-center gap-3"):
         # A real "select all in project" control (not the table header checkbox)
         select_all_cb = ui.checkbox(f"Select all samples in project ({len(rows)})", value=False)
         select_all_cb.on_value_change(lambda e: _select_all(e.value))
 
         ui.button("Clear selection", on_click=lambda: _select_all(False)).props("flat")
-
-    # Optional: keep the count updated when user manually ticks checkboxes on the current page
-    # (This depends on NiceGUI version; using a safe trigger by reading table.selected)
-    table.on('selection', lambda _: _update_selected_count())
 
     # Control row for adding samples to lane(s)
     with ui.row().classes("items-center gap-2"):
@@ -287,11 +467,11 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
 
         def do_add():
             selected = table.selected or []
-            sample_ids = [r["sample_id"] for r in selected]
+            sample_uids = [r["sample_uid"] for r in selected]
             lane_ids = [int(x) for x in (lane_sel.value or [])]
 
             # Validation toasts:
-            if not sample_ids:
+            if not sample_uids:
                 ui.notify("No samples selected", type="warning")
                 return
             if not lane_ids:
@@ -299,38 +479,47 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
                 return
 
             # Persist changes
-            actions.add_samples_to_lanes(state, sample_ids, lane_ids)
+            actions.add_samples_to_lanes(state, sample_uids, lane_ids)
             save_plan(state)  # auto-save after lane change
+
+            # Clear selection
             table.selected = []
             select_all_cb.value = False
             _update_selected_count()
+
             refresh_all()
 
         ui.button("Add selected", on_click=do_add)
 
 
+# -------------------------
+# Lanes panel (dense summary)
+# -------------------------
+
 def build_lane_panel(state: RunState, refresh_all) -> None:
     """creates a monitoring and management panel for sequencing lanes."""
     ui.label("Lanes").classes("text-base font-semibold")
 
+    # Dense layout: fixed right column for status dot
     for lid in range(1, 9):
         lane = state.lanes[lid]
+
         with ui.card().classes("w-full mb-2"):
-            # Header row with Lane ID and Status indicator
-            with ui.row().classes("w-full items-center justify-between"):
+            with ui.row().classes("w-full items-center"):
+                # Left
                 ui.label(f"Lane {lid}").classes("font-semibold")
-                ui.label(status_dot(lane.status))
 
-            # Metadata summary
-            ui.label(f"projects: {len(lane.project_ids)}  ·  samples: {len(lane.sample_ids)}").classes("text-sm")
+                # Middle summary
+                ui.label(
+                    f"projects: {len(lane.project_ids)}   samples: {len(lane.sample_uids)}"
+                ).classes("text-sm text-gray-700")
 
-            # Error handling: displays error text and a collapsible details selection
-            if lane.status == LaneStatus.ERROR:
-                ui.label(lane.headline or "Error").classes("text-sm font-semibold text-red-600")
-                if lane.details:
-                    with ui.expansion("details").classes("w-full"):
-                        for d in lane.details[:5]: # Show first 5 errors
-                            ui.label(d).classes("text-xs text-gray-700")
+                # Right-aligned status dot (fixed)
+                ui.label(status_dot(lane.status)).classes("ml-auto")
+
+            # Brief summary only (details go to Messages Panel)
+            if lane.status != LaneStatus.OK and lane.headline:
+                ui.label(lane.headline).classes("text-xs text-gray-700")
 
             # Management actions
             with ui.row().classes("items-center gap-2 mt-2"):
@@ -379,13 +568,117 @@ def _clear_lane(state: RunState, lane_id: int, refresh_all) -> None:
     refresh_all()
 
 
+# -------------------------
+# Messages panel
+# -------------------------
+
+def build_messages_panel(state: RunState, refresh_all) -> None:
+    with ui.card().classes("w-full h-full").style("overflow:hidden;"):
+        ui.label("Messages").classes("text-base font-semibold")
+
+        # Only show warnings/errors (by model), persistent
+        msgs = list(state.messages)
+
+        if not msgs:
+            ui.label("No errors or warnings").classes("text-sm text-gray-500")
+            return
+
+        # Controls
+        with ui.row().classes("w-full items-center gap-2"):
+            search = ui.input("Search", placeholder="text contains...").classes("w-full")
+            lane_opts = ["(any)"] + [str(i) for i in range(1, 9)]
+            lane_sel = ui.select(options=lane_opts, value="(any)", label="Lane").classes("w-28")
+
+            proj_opts = ["(any)"] + sorted(state.projects.keys())
+            proj_sel = ui.select(options=proj_opts, value="(any)", label="Project").classes("w-40")
+
+            ui.button("Clear index import msgs", on_click=lambda: _clear_source("index_import")).props("flat")
+
+        def _clear_source(src: str):
+            actions.clear_messages(state, source=src)
+            save_plan(state)
+            refresh_all()
+
+        # Filter function
+        def _filtered() -> List[Message]:
+            q = (search.value or "").strip().lower()
+            lane_v = lane_sel.value
+            proj_v = proj_sel.value
+
+            out: List[Message] = []
+            for m in msgs:
+                if lane_v != "(any)":
+                    if m.lane is None or str(m.lane) != lane_v:
+                        continue
+                if proj_v != "(any)":
+                    if (m.project_id or "") != proj_v:
+                        continue
+                if q:
+                    hay = " ".join([m.level, m.source, m.text, str(m.lane or ""), m.project_id or "", m.sample_id or ""]).lower()
+                    if q not in hay:
+                        continue
+                out.append(m)
+            return out
+
+        columns = [
+            {"name": "level", "label": "level", "field": "level", "sortable": True},
+            {"name": "source", "label": "source", "field": "source", "sortable": True},
+            {"name": "lane", "label": "lane", "field": "lane", "sortable": True},
+            {"name": "project", "label": "project", "field": "project", "sortable": True},
+            {"name": "sample", "label": "sample", "field": "sample", "sortable": True},
+            {"name": "text", "label": "message", "field": "text"},
+            {"name": "ts", "label": "time", "field": "ts", "sortable": True},
+        ]
+
+        def _rows() -> List[Dict[str, Any]]:
+            out = []
+            for m in _filtered():
+                out.append(
+                    {
+                        "level": m.level,
+                        "source": m.source,
+                        "lane": m.lane or "",
+                        "project": m.project_id or "",
+                        "sample": m.sample_id or "",
+                        "text": m.text,
+                        "ts": m.ts,
+                    }
+                )
+            # newest last keeps context; user can sort by time if needed
+            return out
+
+        # table area: x/y scroll container (critical fix)
+        # Keep header+controls fixed, only table scrolls
+        table_container = ui.element("div").classes("w-full").style(
+            "overflow:auto; height: calc(100% - 96px);"  # 96px roughly for title+filters row
+        )
+
+        def _render_table():
+            table_container.clear()
+            with table_container:
+                t = ui.table(columns=columns, rows=_rows(), row_key="ts").props("dense").classes("w-full")
+                # keep cells from wrapping so horizontal scroll works
+                t.style("white-space: nowrap; width: 100%;")
+
+        # Re-render when controls change
+        search.on_value_change(lambda _: _render_table())
+        lane_sel.on_value_change(lambda _: _render_table())
+        proj_sel.on_value_change(lambda _: _render_table())
+
+        _render_table()
+
+
+# -------------------------
+# main layout
+# -------------------------
+
 def build_main_view(state: RunState) -> None:
     """
     Root coordinator for application's layout.
     Three-column layout + toolbar. Rebuild on refresh.
     """
     # Create a persistent outer container
-    container = ui.column().classes("w-full")
+    container = ui.column().classes("w-full h-screen overflow-hidden")
 
     # Define how to completely redraw the UI
     def refresh_all():
@@ -398,21 +691,31 @@ def build_main_view(state: RunState) -> None:
             ui.separator()
 
             # Main body: Three-column layout
-            with ui.row().classes("w-full no-wrap"):
-                # Left: Projects (25%)
-                with ui.column().classes("col-3"):
-                    with ui.card().classes("w-full"):
-                        build_project_panel(state, refresh_all)
+            with ui.row().classes("w-full h-[calc(100vh-64px)] overflow-hidden no-wrap"):
+                # Left column: Indexes + Projects + Messages
+                with ui.column().classes("w-1/4 h-full overflow-hidden gap-2"):
+                    # Indexes: natural height, collapse will really shrink
+                    with ui.element("div").classes("w-full"):
+                        build_indexes_panel(state, refresh_all)
+                    # Projects: natural height
+                    with ui.element("div").classes("w-full"):
+                        with ui.card().classes("w-full"):
+                            build_project_panel(state, refresh_all)
+                    # Messages: take remaining height (this is the key)
+                    with ui.element("div").classes("w-full flex-1 overflow-hidden"):
+                            build_messages_panel(state, refresh_all)
 
-                # Center: Samples Table (50%)
-                with ui.column().classes("col-6"):
-                    with ui.card().classes("w-full"):
-                        build_sample_panel(state, refresh_all)
+                # Center column: Samples Table (x/y scroll)
+                with ui.column().classes("w-2/4 h-full overflow-hidden"):
+                    with ui.card().classes("w-full h-full overflow-hidden"):
+                        with ui.element("div").classes("w-full h-full overflow-auto"):
+                            build_sample_panel(state, refresh_all)
 
-                # Right: Lanes/Status (25%)
-                with ui.column().classes("col-3"):
-                    with ui.card().classes("w-full"):
-                        build_lane_panel(state, refresh_all)
+                # Right column: Lanes (y scroll)
+                with ui.column().classes("w-1/4 h-full overflow-hidden"):
+                    with ui.card().classes("w-full h-full overflow-hidden"):
+                        with ui.element("div").classes("w-full h-full overflow-auto"):
+                            build_lane_panel(state, refresh_all)
 
     # Initial render
     refresh_all()

@@ -5,16 +5,47 @@
 from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Literal, Tuple, Any
 import json
 from pathlib import Path
 from datetime import datetime
 
 
+SAMPLE_UID_SEP = "::"
+
 class LaneStatus(str, Enum):
     OK = "ok"
     WARNING = "warning"
     ERROR = "error"
+
+
+MessageLevel = Literal["error", "warning"]
+
+@dataclass
+class Message:
+    """
+    A persistent message shown in the Messages Panel.
+    Keep this small and structured so we can filter/search.
+    """
+    level: MessageLevel
+    text: str
+    source: str = "" # e.g. index_import / project_import / lane_validation
+    lane: Optional[int] = None
+    project_id: Optional[str] = None
+    sample_id: Optional[str] = None
+    ts: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+IndexMappingType = Literal["dual", "single"]
+
+@dataclass
+class IndexTables:
+    """Merged global mapping tables (one per type)."""
+    dual: Dict[str, Dict[str, str]] = field(default_factory=dict)  # index_id -> {i7, i5}
+    single: Dict[str, str] = field(default_factory=dict)           # index_id -> sequence
+
+    def stats(self) -> Dict[str, int]:
+        return {"dual_ids": len(self.dual), "single_ids": len(self.single)}
 
 
 @dataclass
@@ -43,8 +74,15 @@ class Project:
 @dataclass
 class Lane:
     lane_id: int
-    sample_ids: List[str] = field(default_factory=list)  # store sample_id only
+
+    # Store unique per-sample key to disambiguate same sample_id in different projects
+    # Format: "{project_id}::{sample_id}"
+    sample_uids: List[str] = field(default_factory=list)
+
+    # convenience summary (unique project_ids in this lane)
     project_ids: List[str] = field(default_factory=list)
+
+    # Land status (whether or not passing initial check
     status: LaneStatus = LaneStatus.OK
     headline: str = ""
     details: List[str] = field(default_factory=list)
@@ -52,28 +90,59 @@ class Lane:
 
 @dataclass
 class RunState:
-    index_set_name: str = "Illumina (mock)"
+    # Index mapping tables (merged global tables, one per type)
+    index_tables: IndexTables = field(default_factory=IndexTables)
+    indexes_panel_collapsed: bool = True
+    indexes_mapping_type: IndexMappingType = "dual" # dropdown selection in Indexes Panel
+
+    # Messages panel (Errors/Warnings only; persistent)
+    messages: List[Message] = field(default_factory=list)
+
+    # Project panel
     projects: Dict[str, Project] = field(default_factory=dict)
     selected_project_id: Optional[str] = None
+
+    # Lane panel
     lanes: Dict[int, Lane] = field(default_factory=lambda: {i: Lane(i) for i in range(1, 9)})
+
+    # Samples panel
     samples_rows_per_page: int = 50 # number of samples to show in table
+    # store selected sample_uids (UI selection)
+    selected_sample_uids: List[str] = field(default_factory=list)
 
     # ---------- persistence ----------
     def to_dict(self) -> dict:
         return {
-            "index_set_name": self.index_set_name,
+            "index_tables": asdict(self.index_tables), 
+            "indexes_panel_collapsed": self.indexes_panel_collapsed,
+            "indexes_mapping_type": self.indexes_mapping_type,
+            "messages": [asdict(m) for m in self.messages], 
             "selected_project_id": self.selected_project_id,
             "projects": {pid: asdict(p) for pid, p in self.projects.items()},
             "lanes": {str(lid): asdict(l) for lid, l in self.lanes.items()},
             "samples_rows_per_page": self.samples_rows_per_page,
+            "selected_sample_uids": self.selected_sample_uids,
         }
 
     @staticmethod
     def from_dict(d: dict) -> "RunState":
-        rs = RunState(index_set_name=d.get("index_set_name", "Illumina (mock)"))
+        rs = RunState()
+
+        # index tables + indexes panel state
+        it = d.get("index_tables") or {}
+        rs.index_tables = IndexTables(
+            dual = it.get("dual") or {},
+            single = it.get("single") or {}, 
+        )
+        rs.indexes_panel_collapsed = bool(d.get("indexes_panel_collapsed", True))
+        rs.indexes_mapping_type = d.get("indexes_mapping_type", "dual")
+
+        # messages
+        rs.messages = [Message(**m) for m in (d.get("messages") or [])]
+        
+        # projects
         rs.selected_project_id = d.get("selected_project_id")
 
-        # projects
         rs.projects = {}
         for pid, pdata in (d.get("projects") or {}).items():
             samples = [Sample(**s) for s in pdata.get("samples", [])]
@@ -85,19 +154,22 @@ class RunState:
             lid = int(lid_str)
             lane = Lane(
                 lane_id=lid,
-                sample_ids=ldata.get("sample_ids", []),
+                # backward compatible: old plans may have "sample_ids"
+                sample_uids=ldata.get("sample_uids", ldata.get("sample_ids", [])),
                 project_ids=ldata.get("project_ids", []),
                 status=LaneStatus(ldata.get("status", LaneStatus.OK)),
                 headline=ldata.get("headline", ""),
                 details=ldata.get("details", []),
             )
             rs.lanes[lid] = lane
+
         # ensure 1-8 exist
         for i in range(1, 9):
             rs.lanes.setdefault(i, Lane(i))
 
         # samples panel: rows per page
         rs.samples_rows_per_page = int(d.get("samples_rows_per_page", 50))
+        rs.selected_sample_uids = list(d.get("selected_sample_uids", []))
 
         return rs
 
@@ -122,4 +194,13 @@ def save_plan(state: RunState, path: Optional[Path] = None) -> Path:
 def load_plan(path: Path) -> RunState:
     d = json.loads(path.read_text(encoding="utf-8"))
     return RunState.from_dict(d)
+
+def make_sample_uid(project_id: str, sample_id: str) -> str:
+    return f"{project_id}{SAMPLE_UID_SEP}{sample_id}"
+
+def split_sample_uid(sample_uid: str) -> Tuple[str, str]:
+    if SAMPLE_UID_SEP in sample_uid:
+        pid, sid = sample_uid.split(SAMPLE_UID_SEP, 1)
+        return pid, sid
+    return "", sample_uid
 
