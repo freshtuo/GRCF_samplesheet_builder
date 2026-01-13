@@ -230,37 +230,6 @@ def import_mapping_dialog(state: RunState, refresh_all) -> None:
 
     dialog.open()
 
-"""
-def build_indexes_panel(state: RunState, refresh_all) -> None:
-    dual_n = len(state.index_tables.dual)
-    single_n = len(state.index_tables.single)
-    total_n = dual_n + single_n
-
-    with ui.card().classes("w-full"):
-        # single expansion as the whole panel
-        with ui.expansion(
-            ##f"Indexes (2 tables, {total_n} IDs)", 
-            f"Indexes", 
-            value=True, 
-        ).classes("w-full").props(
-            'header-class="text-base font-semibold text-left" '
-            'expand-icon="mdi-plus" '
-            'expanded-icon="mdi-minus" '
-            'expand-icon-class="text-primary text-lg" '
-            'expand-icon-toggle'
-        ):
-            # Mapping type selector (required by spec)
-            ui.select(
-                options=["dual", "single"],
-                value=state.indexes_mapping_type,
-                label="Mapping type (dual: index_id,i7,i5 ; single: index_id,sequence)",
-                on_change=lambda e: setattr(state, "indexes_mapping_type", e.value),
-            ).classes("w-full")
-
-            ui.button("Load mapping table…", on_click=lambda: import_mapping_dialog(state, refresh_all)).props("outline").classes("w-full")
-
-            ui.label(f"dual: {dual_n} IDs | single: {single_n} IDs").classes("text-xs text-gray-500")
-"""
 
 def build_indexes_panel(state: RunState, refresh_all) -> None:
     stats = state.index_tables.stats()
