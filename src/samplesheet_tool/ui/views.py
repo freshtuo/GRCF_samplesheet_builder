@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import inspect
 from nicegui import ui
 from typing import List, Dict, Any, Optional
 from pathlib import Path
@@ -193,11 +194,13 @@ def import_mapping_dialog(state: RunState, refresh_all) -> None:
 
         file_buf: Dict[str, str] = {"text": "", "name": ""}
 
-        def on_upload(e):
-            # NiceGUI UploadEvent provides e.content (bytes) and e.name
-            raw = e.content.read().decode("utf-8", errors="replace")
+        async def on_upload(e):
+            out = e.file.read()
+            data = await out if inspect.isawaitable(out) else out
+            raw = data.decode("utf-8", errors="replace")
+
             file_buf["text"] = raw
-            file_buf["name"] = e.name or "(uploaded)"
+            file_buf["name"] = getattr(e, "name", None) or "(uploaded)"
             filename_label.text = f"Selected: {file_buf['name']}"
             content_preview.value = "\n".join(raw.splitlines()[:20])
 
