@@ -177,7 +177,8 @@ class RunState:
 def default_store_dir() -> Path:
     # internal tool: under user home directory, can be changed other directories later
     #base = Path.home() / ".samplesheet_tool_ui"
-    base = Path("/gc11-data/analysis/taz2008/.samplesheet_tool_ui")
+    #base = Path("/gc11-data/analysis/taz2008/.samplesheet_tool_ui")
+    base = Path("/Users/freshtuo/Work/.samplesheet_tool_ui")
     base.mkdir(parents=True, exist_ok=True)
     return base
 
