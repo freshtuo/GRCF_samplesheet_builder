@@ -16,7 +16,8 @@ from samplesheet_tool.ui.state import (
     Message, MessageLevel, 
     IndexMappingType, 
     save_plan, load_plan,
-    make_sample_uid, split_sample_uid,
+    make_sample_uid, split_sample_uid, 
+    save_index_preset
 )
 
 
@@ -184,6 +185,9 @@ def import_mapping_table_from_text(
             f"Index import warning ({filename}): {dup_n} duplicate ID(s) already present (kept existing)",
             source="index_import",
         )
+
+    # persist merged index tables as preset
+    save_index_preset(state)
 
     ui.notify(f"Loaded mapping table: +{add_n} IDs ({mapping_type})", type="positive")
     return True

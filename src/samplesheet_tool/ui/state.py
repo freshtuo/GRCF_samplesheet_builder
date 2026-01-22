@@ -177,8 +177,8 @@ class RunState:
 def default_store_dir() -> Path:
     # internal tool: under user home directory, can be changed other directories later
     #base = Path.home() / ".samplesheet_tool_ui"
-    #base = Path("/gc11-data/analysis/taz2008/.samplesheet_tool_ui")
-    base = Path("/Users/freshtuo/Work/.samplesheet_tool_ui")
+    base = Path("/gc11-data/analysis/taz2008/.samplesheet_tool_ui")
+    #base = Path("/Users/freshtuo/Work/.samplesheet_tool_ui")
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -195,6 +195,39 @@ def save_plan(state: RunState, path: Optional[Path] = None) -> Path:
 def load_plan(path: Path) -> RunState:
     d = json.loads(path.read_text(encoding="utf-8"))
     return RunState.from_dict(d)
+
+
+# -------------------------
+# index preset persistence
+# -------------------------
+
+def index_preset_path() -> Path:
+    # get JSON file storing index preset
+    return default_store_dir() / "index_preset.json"
+
+def save_index_preset(state: RunState) -> None:
+    """Persist merged index tables (dual + single)."""
+    path = index_preset_path()
+    payload = {
+        "dual": state.index_tables.dual,
+        "single": state.index_tables.single,
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+def load_index_preset(state: RunState) -> None:
+    """Load merged index tables if preset exists."""
+    path = index_preset_path()
+    if not path.exists():
+        return
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        state.index_tables.dual = data.get("dual", {})
+        state.index_tables.single = data.get("single", {})
+    except Exception:
+        # fail silently; preset is optional
+        pass
+
 
 def make_sample_uid(project_id: str, sample_id: str) -> str:
     return f"{project_id}{SAMPLE_UID_SEP}{sample_id}"

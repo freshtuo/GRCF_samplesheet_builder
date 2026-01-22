@@ -180,31 +180,100 @@ def import_mapping_dialog(state: RunState, refresh_all) -> None:
     with ui.dialog() as dialog, ui.card().classes("w-[720px]"):
         ui.label("Load mapping table").classes("text-base font-semibold")
         ui.label(
-            "MVP: upload CSV/TSV with header. dual: index_id,i7,i5 ; single: index_id,sequence"
+            "Upload CSV/TSV. Comment lines starting with '#' will be ignored. "
+            "Then select which columns are ID / i7 / i5 (dual) or ID / sequence (single)."
         ).classes("text-xs text-gray-500")
 
         mapping_type = ui.select(
             options=["dual","single"],
             value=state.indexes_mapping_type,
-            label="Mapping type (dual: index_id,i7,i5 ; single: index_id,sequence)",
+            label="Mapping type",
         ).classes("w-full")
 
-        content_preview = ui.textarea("File preview", placeholder="(upload a file)").props("readonly").classes("w-full")
+        content_preview = ui.textarea("File preview (comments removed)", placeholder="(upload a file)").props("readonly").classes("w-full")
         filename_label = ui.label("").classes("text-xs text-gray-500")
 
-        file_buf: Dict[str, str] = {"text": "", "name": ""}
+        # simple UI-local buffer
+        file_buf: Dict[str, Any] = {"text": "", "name": "", "cols": [], "delimiter": ","}
+
+        # column role selections
+        col_id = {"v": None}
+        col_i7 = {"v": None} # i7 for dual, sequence for single
+        col_i5 = {"v": None}
+
+        ui.separator()
+
+        # ---- column mapping UI (options will be filled after upload) ----
+        ui.label("Column mapping").classes("text-subtitle2")
+
+        id_sel = ui.select(options=[], label="Index ID column").classes("w-full")
+        seq_sel = ui.select(options=[], label="i7 / sequence column").classes("w-full")
+        i5_sel = ui.select(options=[], label="i5 sequence column").classes("w-full")
+
+        # register handlers
+        id_sel.on_value_change(lambda e: col_id.__setitem__("v", e.value))
+        seq_sel.on_value_change(lambda e: col_i7.__setitem__("v", e.value))
+        i5_sel.on_value_change(lambda e: col_i5.__setitem__("v", e.value))
+
+        # show/hide i5 selector based on mapping type
+        def _sync_i5_visibility():
+            i5_sel.set_visibility(mapping_type.value == "dual")
+
+        mapping_type.on_value_change(lambda _: _sync_i5_visibility())
+        _sync_i5_visibility()
 
         async def on_upload(e):
             out = e.file.read()
             data = await out if inspect.isawaitable(out) else out
             raw = data.decode("utf-8", errors="replace")
 
-            file_buf["text"] = raw
             file_buf["name"] = getattr(e, "name", None) or "(uploaded)"
+            name_lower = file_buf["name"].lower()
+
+            # determine delimiter from filename
+            if name_lower.endswith(".tsv") or name_lower.endswith(".txt"):
+                delimiter = "\t"
+            else:
+                delimiter = ","
+            file_buf["delimiter"] = delimiter
+
+            # remove comment lines (start with '#', after stripping)
+            lines = raw.splitlines()
+            lines = [ln for ln in lines if not ln.lstrip().startswith('#')]
+
+            if not lines:
+                ui.notify('No data lines found after removing comments', type='negative')
+                return
+
+            clean_text = '\n'.join(lines)
+            file_buf['text'] = clean_text
+
+            # parse header columns
+            header = [h.strip() for h in lines[0].split(delimiter)]
+            file_buf["cols"] = header
+            
+            # reset selections
+            col_id["v"] = None
+            col_i7["v"] = None
+            col_i5["v"] = None
+            id_sel.value = None
+            seq_sel.value = None
+            i5_sel.value = None
+
+            # update select options
+            id_sel.options = header
+            seq_sel.options = header
+            i5_sel.options = header
+            id_sel.update()
+            seq_sel.update()
+            i5_sel.update()
+
             filename_label.text = f"Selected: {file_buf['name']}"
-            content_preview.value = "\n".join(raw.splitlines()[:20])
+            content_preview.value = "\n".join(lines[:20])
 
         ui.upload(on_upload=on_upload, auto_upload=True, multiple=False).props("accept=.csv,.tsv,.txt")
+
+        ui.separator()
 
         with ui.row().classes("justify-end gap-2"):
             ui.button("Cancel", on_click=dialog.close).props("flat")
@@ -215,14 +284,49 @@ def import_mapping_dialog(state: RunState, refresh_all) -> None:
                 ui.notify("Please upload a file", type="warning")
                 return
 
+            # persist mapping type choice
             state.indexes_mapping_type = mapping_type.value or state.indexes_mapping_type
+
+            # validate column mapping
+            if not col_id["v"] or not col_i7["v"]:
+                ui.notify("Please select required columns", type="negative")
+                return
+            if mapping_type.value == "dual" and not col_i5["v"]:
+                ui.notify("Please select i5 column for dual mapping", type="negative")
+                return
+
+            selected = [col_id["v"], col_i7["v"]]
+            if state.indexes_mapping_type== "dual":
+                selected.append(col_i5["v"])
+            if len(set(selected)) != len(selected):
+                ui.notify("Each role must map to a different column", type="negative")
+                return
+
+            # rewrite header to internal standard
+            lines = file_buf["text"].splitlines()
+            delimiter = file_buf["delimiter"]
+
+            header = [h.strip() for h in lines[0].split(delimiter)]
+
+            rename = {
+                col_id["v"]: "index_id",
+                col_i7["v"]: "i7" if state.indexes_mapping_type == "dual" else "sequence"
+            }
+            if state.indexes_mapping_type == "dual":
+                rename[col_i5["v"]] = "i5"
+
+            new_header = [rename.get(h,h) for h in header]
+            lines[0] = delimiter.join(new_header)
+            normalized_text = "\n".join(lines)
 
             ok = actions.import_mapping_table_from_text(
                 state,
                 state.indexes_mapping_type,
-                file_buf["text"],
+                normalized_text,
                 filename=file_buf["name"],
+                delimiter=delimiter
             )
+
             if ok:
                 save_plan(state)
                 dialog.close()
