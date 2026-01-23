@@ -1,7 +1,37 @@
 # GRCF_samplesheet_builder
 Organize samples for a sequencing run, and prepare samplesheet file
 
-1. Folder structure:
+1. Overall Logic Flow:
+
+```text
+Index Mapping Tables
+        ↓
+(Project Import)
+  - read sample file
+  - minimal normalize
+  - resolve index sequences
+  - basic sample-level validation
+        ↓
+RunState.projects (samples with index sequences)
+        ↓
+(UI interaction)
+  assign samples → lanes
+        ↓
+(Lane Pre-check)
+  - lane-local conflicts
+  - hamming / mixing warnings
+        ↓
+RunState.lanes.status + messages
+        ↓
+(Final Validation – CLI)
+  - build canonical df from RunState
+  - validate_all (global truth)
+        ↓
+if ERROR → block export
+else → export SampleSheet + Plan summary
+```
+
+2. Folder structure:
 
 ```text
 samplesheet-tool/
