@@ -506,9 +506,19 @@ def build_project_panel(state: RunState, refresh_all) -> None:
     if state.selected_project_id not in project_ids:
         state.selected_project_id = project_ids[0]
 
+    def _project_label(pid: str):
+        p = state.projects[pid]
+        meta = []
+        if p.index_type:
+            meta.append(p.index_type)
+        if p.library_type:
+            meta.append(p.library_type)
+        suffix = " | ".join(meta)
+        return f"{pid} [{suffix}]" if suffix else pid
+
     # Create the selection dropdown
     sel = ui.select(
-        options=project_ids,
+        options={pid: _project_label(pid) for pid in project_ids},
         value=state.selected_project_id,
         label="Select Project",
     ).classes("w-full")
