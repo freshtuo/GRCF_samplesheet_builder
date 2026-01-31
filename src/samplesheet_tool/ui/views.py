@@ -521,13 +521,44 @@ def build_project_panel(state: RunState, refresh_all) -> None:
     sel.on_value_change(on_change)
 
     p = state.projects[state.selected_project_id]
-    ui.label(f"Samples: {p.n_samples}").classes("text-xs text-gray-600")
-    if p.total_required_reads_m is not None:
-        ui.label(f"Total reads(M): {p.total_required_reads_m}").classes("text-xs text-gray-600")
+
+    with ui.row().classes("w-full items-center gap-2"):
+        ui.label(f"Samples: {p.n_samples}").classes("text-xs text-gray-600")
+        if p.total_required_reads_m is not None:
+            ui.label(f"Total reads(M): {p.total_required_reads_m}").classes("text-xs text-gray-600")
+
+        ui.button(
+            "Remove", 
+            on_click=lambda: _confirm_remove_project(state, refresh_all),
+        ).props("outline dense").classes("ml-auto")
 
     ## debug
     ##ui.label(f"DEBUG pid={state.selected_project_id} projects={list(state.projects.keys())}").classes("text-xs text-gray-500")
     ##ui.label(f"Selected: {state.selected_project_id}").classes("text-xs text-gray-500")
+
+def _confirm_remove_project(state: RunState, refresh_all):
+    pid = state.selected_project_id
+    if not pid:
+        return
+
+    with ui.dialog() as dlg, ui.card():
+        ui.label(f"Remove project '{pid}'?").classes("font-semibold")
+        ##ui.label("This will remove the project and all its lane assignments.").classes("text-sm")
+        ui.label("This will remove the project from the Projects Panel.").classes("text-sm")
+
+        with ui.row().classes("justify-end gap-2"):
+            ui.button("Cancel", on_click=dlg.close).props("flat")
+            ui.button(
+                "Remove",
+                on_click=lambda: _do_remove_project(state, pid, dlg, refresh_all),
+            ).props("unelevated")
+
+    dlg.open()
+
+def _do_remove_project(state: RunState, pid: str, dlg, refresh_all):
+    actions.remove_project(state, pid)
+    dlg.close()
+    refresh_all()
 
 
 # -------------------------

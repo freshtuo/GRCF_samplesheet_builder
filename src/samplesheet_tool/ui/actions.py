@@ -228,6 +228,26 @@ def import_project(
     
     return proj
 
+def remove_project(state: RunState, project_id: str) -> None:
+    if project_id not in state.projects:
+        return
+
+    ## remove from lanes
+    #for lane in state.lanes.values():
+    #    lane.sample_uids = [
+    #        uid for uid in lane.sample_uids if split_sample_uid(uid)[0] != project_id
+    #    ]
+    #    lane.project_ids = [
+    #        pid for pid in lane.project_ids if pid != project_id
+    #    ]
+
+    del state.projects[project_id]
+
+    if state.selected_project_id == project_id:
+        state.selected_project_id = next(iter(state.projects), None)
+
+    save_plan(state)
+
 
 # -------------------------
 # Lane operations + mock validation
