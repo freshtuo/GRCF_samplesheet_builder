@@ -61,33 +61,125 @@ def build_toolbar(state: RunState, refresh_all) -> None:
         # refresh_all will call update_export_enabled as well, through external parameter
 
 
+# Allow re-upload the same file, for project ui.uploader
+upload_key = {"v": 0}
+
 def import_project_dialog(state: RunState, refresh_all) -> None:
     """
-    Creates a modal popup (dialog) used for entering project data
-    Mock project import dialog (atomic import later when wired to CLI).
+    Creates a modal popup (dialog) used for importing a project from CSV/TSV/TXT file.
     """
     with ui.dialog() as dialog, ui.card().classes("w-[520px]"):
-        ui.label("Import Project (mock)").classes("text-base font-semibold")
+        ui.label("Import Project").classes("text-base font-semibold")
 
-        # User input fields
-        project_id = ui.input("project_id", placeholder="e.g. 15730").props("autofocus")
-        n = ui.number("n_samples", value=12, min=1, max=200)
+        # -------------------------
+        # basic metadata
+        # -------------------------
+        project_id = ui.input("project_id", placeholder="e.g. Gudas-XT-20288").props("autofocus")
 
-        # Action buttons aligned to the right
-        with ui.row().classes("justify-end gap-2"):
+        index_type = ui.select(
+            options = ["dual", "single"],
+            value = "dual",
+            label = "index type",
+        ).classes("w-full")
+
+        library_type = ui.input(
+            "library type",
+            placeholder = "e.g. RNA-seq, scRNA-seq, Amplicon-seq", 
+        ).classes("w-full")
+
+        default_reads = ui.number(
+            "Default required reads per sample (M)",
+            value=40,
+            min=1,
+        ).classes("w-full")
+
+        ui.separator()
+
+        # -------------------------
+        # file upload
+        # -------------------------
+        ui.label("Project sample file (CSV/TSV)").classes("text-sm font-semibold")
+
+        uploaded = {
+            "path": None,
+            "name": None,
+        }
+
+        async def on_upload_project_file(e):
+            """
+            upload handler.
+            e.file is a SpooledTemporaryFile-like object.
+            """
+            # write uploaded file to a temp path
+            content = await e.file.read()
+
+            filename = Path(e.file.name).name
+            tmp_path = default_store_dir() / f"_upload_{filename}"
+
+            tmp_path.write_bytes(content)
+
+            uploaded["path"] = str(tmp_path)
+            uploaded["name"] = filename
+
+            ui.notify(f"Uploaded: {filename}", type="positive")
+
+        ui.upload(
+            on_upload = on_upload_project_file, 
+            auto_upload = True, 
+            multiple = False,
+        ).props("accept=.csv,.tsv,.txt").key(upload_key["v"])
+
+        # -------------------------
+        # action buttons
+        # -------------------------
+        with ui.row().classes("justify-end gap-2 mt-4"):
             ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button("Import", on_click=lambda: _do()).props("unelevated")
+            ui.button("Import", on_click=lambda: _do_import()).props("unelevated")
 
-        def _do():
-            # Basic validation
+        # -------------------------
+        # import action
+        # ------------------------- 
+        def _do_import():
             pid = (project_id.value or "").strip()
             if not pid:
-                ui.notify("project_id is required", type="negative")
+                ui.notify("Project ID is required", type="negative")
                 return
 
-            # Excute mock backend action (assumes an 'actions' module exists)
-            # replace it with real import + atomic validate later
-            actions.mock_import_project(state, pid, int(n.value or 12))
+            if not uploaded["path"]:
+                ui.notify("Please upload a project file", type="negative")
+                return
+
+            # get temporary file
+            tmp_path = Path(uploaded["path"])
+
+            try:
+                proj = actions.import_project(
+                    state = state,
+                    project_id = pid,
+                    index_type = index_type.value, 
+                    library_type = (library_type.value or "").strip() or None,
+                    file_path = tmp_path, 
+                    default_required_reads_m = int(default_reads.value) if default_reads.value is not None else None, 
+                )
+            except Exception as e:
+                ui.notify(f"Import failed: {e}", type="negative")
+                return
+            finally:
+                # clean up temporary file
+                try:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                except Exception:
+                    pass
+
+                # reset upload state
+                uploaded["path"] = None
+                uploaded["name"] = None
+
+                # force rebuild the uploader
+                upload_key["v"] += 1
+
+            ui.notify(f"Imported project {pid} ({len(proj.samples)} samples)", type="positive")
 
             # Close the modal and update the main UI
             dialog.close()
@@ -430,8 +522,8 @@ def build_project_panel(state: RunState, refresh_all) -> None:
 
     p = state.projects[state.selected_project_id]
     ui.label(f"Samples: {p.n_samples}").classes("text-xs text-gray-600")
-    if p.total_reads_m is not None:
-        ui.label(f"Total reads(M): {p.total_reads_m}").classes("text-xs text-gray-600")
+    if p.total_required_reads_m is not None:
+        ui.label(f"Total reads(M): {p.total_required_reads_m}").classes("text-xs text-gray-600")
 
     ## debug
     ##ui.label(f"DEBUG pid={state.selected_project_id} projects={list(state.projects.keys())}").classes("text-xs text-gray-500")
@@ -456,23 +548,39 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
     p = state.projects[pid]
     ##ui.label(f"DEBUG samples={len(p.samples)}").classes("text-xs text-gray-500") # DEBUG
 
+    # get index type of the current project
+    index_type = p.index_type if p else "dual"
+
     rows: List[Dict[str, Any]] = []
     for s in p.samples:
         rows.append({
             "sample_uid": make_sample_uid(s.project_id, s.sample_id), 
             "project_id": s.project_id, 
             "sample_id": s.sample_id,
-            "reads_m": s.reads_m,
-            "index_id": s.index_id,
+            "i7_id": s.i7_id,
+            "i7_seq": s.i7_seq,
+            "i5_id": s.i5_id,
+            "i5_seq": s.i5_seq,
+            "required_reads_m": s.required_reads_m,
         })
     ##ui.label(f"DEBUG rows={len(rows)}").classes("text-xs text-gray-500") # DEBUG
 
     columns = [
-        {"name": "sample_id", "label": "sample_id", "field": "sample_id", "sortable": True},
-        {"name": "reads_m", "label": "reads(M)", "field": "reads_m", "sortable": True},
-        {"name": "index_id", "label": "index_id", "field": "index_id", "sortable": True},
+        {"name": "sample_id", "label": "Sample ID", "field": "sample_id", "sortable": True},
+        {"name": "i7_id", "label": "i7 ID", "field": "i7_id", "sortable": True}, 
+        {"name": "i7_seq", "label": "i7 Seq", "field": "i7_seq", "sortable": True}, 
     ]
     ##ui.label("DEBUG sample id of first sample: {}".format(rows[0]["sample_id"])) # DEBUG
+
+    if index_type == "dual":
+        columns += [
+            {"name": "i5_id", "label": "i5 ID", "field": "i5_id", "sortable": True}, 
+            {"name": "i5_seq", "label": "i5 Seq", "field": "i5_seq", "sortable": True}, 
+        ]
+
+    columns += [
+        {"name": "required_reads_m", "label": "Required Reads (M)", "field": "required_reads_m", "sortable": True},
+    ]
 
     # Table container enforces X/Y-scroll and prevents global page scroll + table fill width
     with ui.element("div").classes("w-full").style("overflow:auto; max-height: 68vh; width: 100%;"):

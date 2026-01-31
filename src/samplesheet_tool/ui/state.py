@@ -41,7 +41,7 @@ IndexMappingType = Literal["dual", "single"]
 @dataclass
 class IndexTables:
     """Merged global mapping tables (one per type)."""
-    dual: Dict[str, Dict[str, str]] = field(default_factory=dict)  # index_id -> {i7, i5}
+    dual: Dict[str, Dict[str, str]] = field(default_factory=dict)  # index_id -> {"i7":..., "i5":...}
     single: Dict[str, str] = field(default_factory=dict)           # index_id -> sequence
 
     def stats(self) -> Dict[str, int]:
@@ -52,22 +52,36 @@ class IndexTables:
 class Sample:
     sample_id: str
     project_id: str
-    reads_m: Optional[int] = None
-    index_id: Optional[str] = None
+
+    # index info
+    i7_id: Optional[str] = None
+    i7_seq: Optional[str] = None
+    i5_id: Optional[str] = None
+    i5_seq: Optional[str] = None
+
+    # required reads per sample (M)
+    required_reads_m: Optional[int] = None
 
 
 @dataclass
 class Project:
     project_id: str
     samples: List[Sample] = field(default_factory=list)
+    library_type: Optional[str] = None
+    index_type: Literal["single", "dual"] = "dual"
 
     @property
     def n_samples(self) -> int:
+        """Number of samples in the project"""
         return len(self.samples)
 
     @property
-    def total_reads_m(self) -> Optional[int]:
-        vals = [s.reads_m for s in self.samples if s.reads_m is not None]
+    def total_required_reads_m(self) -> Optional[int]:
+        """
+        Calculate the total number of required reads for this project 
+        i.e. sum required reads across all samples
+        """
+        vals = [s.required_reads_m for s in self.samples if s.required_reads_m is not None]
         return sum(vals) if vals else None
 
 

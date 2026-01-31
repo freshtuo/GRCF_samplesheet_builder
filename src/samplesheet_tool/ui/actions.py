@@ -20,6 +20,7 @@ from samplesheet_tool.ui.state import (
     save_index_preset
 )
 
+from samplesheet_tool.ui.project_io import import_project_from_file
 
 # -------------------------
 # Messages (persistent)
@@ -194,30 +195,38 @@ def import_mapping_table_from_text(
 
 
 # -------------------------
-# Project import (mock)
+# Project import
 # -------------------------
 
-def mock_import_project(state: RunState, project_id: str, n: int = 12) -> bool:
-    """Mock project import.
-
-    Spec intent: atomic import; if errors, project should NOT enter system.
-    For MVP, we always succeed but still demonstrate messaging hooks.
+def import_project(
+    *,
+    state: RunState,
+    project_id: str,
+    index_type: str,
+    library_type: Optional[str],
+    file_path: Path,
+    default_required_reads_m: Optional[int],
+) -> Project:
     """
-    # Clear previous project import messages
-    clear_messages(state, source="project_import")
+    Atomic project import:
+    - parse + validate file
+    - commit into RunState
+    """
+    proj = import_project_from_file(
+        state=state,
+        project_id=project_id,
+        index_type=index_type,
+        library_type=library_type,
+        file_path=file_path,
+        default_required_reads_m=default_required_reads_m,
+    )
 
-    # mock: generate some samples
-    samples = []
-    for i in range(1, n + 1):
-        samples.append(Sample(
-            sample_id=f"{project_id}_S{i:03d}",
-            project_id=project_id,
-            reads_m=50,
-            index_id=f"IDX{i:02d}",
-        ))
-    state.projects[project_id] = Project(project_id=project_id, samples=samples)
+    state.projects[project_id] = proj
     state.selected_project_id = project_id
-    return True
+
+    save_plan(state)
+    
+    return proj
 
 
 # -------------------------
