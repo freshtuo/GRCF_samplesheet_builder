@@ -61,9 +61,6 @@ def build_toolbar(state: RunState, refresh_all) -> None:
         # refresh_all will call update_export_enabled as well, through external parameter
 
 
-# Allow re-upload the same file, for project ui.uploader
-upload_key = {"v": 0}
-
 def import_project_dialog(state: RunState, refresh_all) -> None:
     """
     Creates a modal popup (dialog) used for importing a project from CSV/TSV/TXT file.
@@ -105,6 +102,8 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
             "name": None,
         }
 
+        uploader_container = ui.column()
+
         async def on_upload_project_file(e):
             """
             upload handler.
@@ -123,11 +122,15 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
 
             ui.notify(f"Uploaded: {filename}", type="positive")
 
-        ui.upload(
-            on_upload = on_upload_project_file, 
-            auto_upload = True, 
-            multiple = False,
-        ).props("accept=.csv,.tsv,.txt").key(upload_key["v"])
+        def build_uploader():
+            uploader_container.clear()
+            ui.upload(
+                on_upload = on_upload_project_file, 
+                auto_upload = True, 
+                multiple = False,
+            ).props("accept=.csv,.tsv,.txt")
+
+        build_uploader()
 
         # -------------------------
         # action buttons
@@ -175,9 +178,6 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
                 # reset upload state
                 uploaded["path"] = None
                 uploaded["name"] = None
-
-                # force rebuild the uploader
-                upload_key["v"] += 1
 
             ui.notify(f"Imported project {pid} ({len(proj.samples)} samples)", type="positive")
 
