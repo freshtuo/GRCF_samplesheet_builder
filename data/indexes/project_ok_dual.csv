@@ -1,0 +1,5 @@
+sample_id,i7_index_id,i7_index_seq,i5_index_id,i5_index_seq,required_reads_m
+S001,SI-NN-A1,,SI-NN-A1,,50
+S002,D701,,D501,,80
+S003,,ACGTACGT,D502,,30
+S004,IDX05,TTGGAACC,IDX06,CCGGAATT,

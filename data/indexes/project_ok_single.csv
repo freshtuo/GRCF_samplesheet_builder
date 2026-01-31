@@ -1,0 +1,4 @@
+sample_id,i7_index_id,i7_index_seq,required_reads_m
+S101,D703,,40
+S102,,ACGTGCAA,60
+S103,IDX13,TTCCAAGG,
