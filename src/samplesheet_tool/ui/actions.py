@@ -253,6 +253,37 @@ def remove_project(state: RunState, project_id: str) -> None:
 # Lane operations + mock validation
 # -------------------------
 
+def ensure_assignments_initialized(state: RunState) -> None:
+    """If lanes have data but assignments are empty (legacy), migrate lane membership into assignments with reads=0."""
+    if state.assignments:
+        return
+    any_lane_data = any(l.sample_uids for l in state.lanes.values())
+    if not any_lane_data:
+        return
+    for lid, lane in state.lanes.items():
+        for uid in (lane.sample_uids or []):
+            state.assignments.setdefault(uid, {})
+            state.assignments[uid].setdefault(int(lid), 40)
+
+
+def rebuild_lanes_from_assignments(state: RunState) -> None:
+    """Sync lane.sample_uids and lane.project_ids from state.assignments (truth)."""
+    for lane in state.lanes.values():
+        lane.sample_uids = []
+        lane.project_ids = []
+
+    for uid, per_lane in state.assignments.items():
+        pid, _sid = split_sample_uid(uid)
+        for lid in per_lane.keys():
+            lane = state.lanes.get(int(lid))
+            if not lane:
+                continue
+            if uid not in lane.sample_uids:
+                lane.sample_uids.append(uid)
+            if pid and pid not in lane.project_ids:
+                lane.project_ids.append(pid)
+
+
 def lane_recompute_mock(state: RunState, lane_id: int) -> None:
     """Mock lane validation.
 
@@ -311,50 +342,80 @@ def lane_recompute_mock(state: RunState, lane_id: int) -> None:
     lane.details = []
 
 
-def add_samples_to_lanes(
+def assign_samples_to_lanes(
     state: RunState,
     sample_uids: List[str],
     lane_ids: List[int],
+    planned_reads_m: int,
 ) -> None:
     """
-    - Implicit fix: same (project_id, sample_id) already in SAME lane -> skip
-    - Same sample across multiple lanes is allowed (increase depth)
+    Phase1:
+    - store assignment reads at state.assignments[sample_uid][lane_id] = planned_reads_m
+    - sync lane.sample_uids/project_ids (cache)
+    - autosave plan
     """
-    # append syntax: remove redundant samples within a lane (automatically)
+    # legacy: previous assignments data were not recorded, can be removed later
+    ensure_assignments_initialized(state)
+
     if not sample_uids or not lane_ids:
         return
+    if planned_reads_m is None or int(planned_reads_m) <= 0:
+        raise ValueError("planned_reads_m must be > 0")
 
+    pr = int(planned_reads_m)
+    for uid in sample_uids:
+        state.assignments.setdefault(uid, {})
+        for lid in lane_ids:
+            state.assignments[uid][int(lid)] = pr
+
+    rebuild_lanes_from_assignments(state)
+
+    # keep existing lane mock validation for now
     for lid in lane_ids:
-        lane = state.lanes[lid]
-        existing = set(lane.sample_uids)
-        for uid in sample_uids:
-            if uid in existing:
-                continue
-            lane.sample_uids.append(uid)
-            existing.add(uid)
+        lane_recompute_mock(state, int(lid))
 
-            pid, _sid = split_sample_uid(uid)
-            if pid and pid not in lane.project_ids:
-                lane.project_ids.append(pid)
-
-        lane_recompute_mock(state, lid)
+    save_plan(state)
 
 
 def remove_project_from_lane(state: RunState, lane_id: int, project_id: str) -> None:
-    lane = state.lanes[lane_id]
-    if project_id not in lane.project_ids:
-        return
+    # remove assignments in this lane for samples belonging to project
+    lane_id = int(lane_id)
+    to_del: List[str] = []
+    for uid, per_lane in state.assignments.items():
+        pid, _sid = split_sample_uid(uid)
+        if pid != project_id:
+            continue
+        if lane_id in per_lane:
+            del per_lane[lane_id]
+        if not per_lane:
+            to_del.append(uid)
 
-    lane.sample_uids = [uid for uid in lane.sample_uids if split_sample_uid(uid)[0] != project_id]
-    lane.project_ids = [pid for pid in lane.project_ids if pid != project_id]
+    for uid in to_del:
+        del state.assignments[uid]
+
+    rebuild_lanes_from_assignments(state)
     lane_recompute_mock(state, lane_id)
+    save_plan(state)
 
 
 def clear_lane(state: RunState, lane_id: int) -> None:
-    lane = state.lanes[lane_id]
-    lane.sample_uids.clear()
-    lane.project_ids.clear()
+    # remove all projects from a lane, empty it!
+    lane_id = int(lane_id)
+
+    # remove all assignments pointing to this lane
+    to_del: List[str] = []
+    for uid, per_lane in state.assignments.items():
+        if lane_id in per_lane:
+            del per_lane[lane_id]
+        if not per_lane:
+            to_del.append(uid)
+
+    for uid in to_del:
+        del state.assignments[uid]
+
+    rebuild_lanes_from_assignments(state)
     lane_recompute_mock(state, lane_id)
+    save_plan(state)
 
 
 def validate_full_mock(state: RunState) -> None:

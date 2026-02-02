@@ -29,6 +29,19 @@ def status_dot(status: LaneStatus) -> str:
 
 
 # -------------------------
+# lane reads helpers
+# -------------------------
+
+DEFAULT_LANE_CAPACITY_M = 1250  # NovaSeq X Plus 10B / 8 lanes
+
+def lane_used_reads_m(state: RunState, lane_id: int) -> int:
+    total = 0
+    for _uid, per_lane in state.assignments.items():
+        total += int(per_lane.get(lane_id, 0))
+    return total
+
+
+# -------------------------
 # toolbar
 # -------------------------
 
@@ -690,6 +703,12 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
             multiple=True,
         ).classes("w-64")
 
+        planned_reads = ui.number(
+            "Reads per lane (M)",
+            min=10,
+            step=10,
+        ).classes("w-56")
+
         def do_add():
             selected = table.selected or []
             sample_uids = [r["sample_uid"] for r in selected]
@@ -702,10 +721,16 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
             if not lane_ids:
                 ui.notify("No lanes selected", type="warning")
                 return
+            if planned_reads.value is None or int(planned_reads.value) <= 0:
+                ui.notify("Reads per lane (M) must be > 0", type="warning")
+                return
 
             # Persist changes
-            actions.add_samples_to_lanes(state, sample_uids, lane_ids)
-            save_plan(state)  # auto-save after lane change
+            try:
+                actions.assign_samples_to_lanes(state, sample_uids, lane_ids, int(planned_reads.value))
+            except Exception as e:
+                ui.notify(f"Assign failed: {e}", type="negative")
+                return
 
             # Clear selection
             table.selected = []
@@ -723,31 +748,58 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
 
 def build_lane_panel(state: RunState, refresh_all) -> None:
     """creates a monitoring and management panel for sequencing lanes."""
+    # legacy: make sure default reads are assigned to existing lanes/samples (can be removed in the final release)
+    actions.ensure_assignments_initialized(state)
+
     ui.label("Lanes").classes("text-base font-semibold")
 
-    # Dense layout: fixed right column for status dot
+    # Dense layout: fixed left column for status dot
     for lid in range(1, 9):
         lane = state.lanes[lid]
 
         with ui.card().classes("w-full mb-2"):
-            with ui.row().classes("w-full items-center"):
-                # Left
+            used = lane_used_reads_m(state, lid)
+            capacity = DEFAULT_LANE_CAPACITY_M
+            pct = used / capacity if capacity > 0 else 0
+
+            # UI-level overflow rule
+            if pct >= 1.0:
+                lane.status = LaneStatus.ERROR
+
+            # ---------- Line 1: status + lane + reads + progress ----------
+            with ui.row().classes("w-full items-center gap-2"):
+                # status dot (left, highest priority)
+                ui.label(status_dot(lane.status))
+
+                # Lane label
                 ui.label(f"Lane {lid}").classes("font-semibold")
 
-                # Middle summary
+                # right-side info group (reads summary)
+                with ui.row().classes("items-center gap-2 ml-auto"):
+                    # text (main info)
+                    ui.label(
+                        f"{used} / {capacity} M reads"
+                    ).classes("text-sm text-gray-700")
+
+                    # progress bar (right-aligned, short)
+                    ui.linear_progress(
+                        value=min(pct, 1.0),
+                        color="red" if pct >= 1.0 else "primary",
+                    ).props("show-value=false").classes("w-16")
+
+            # ---------- Line 2: projects / samples info + CLEAR LANE ----------
+            with ui.row().classes("w-full items-center mt-0"):
                 ui.label(
                     f"projects: {len(lane.project_ids)}   samples: {len(lane.sample_uids)}"
-                ).classes("text-sm text-gray-700")
+                ).classes("text-sm text-gray-600 leading-tight")
 
-                # Right-aligned status dot (fixed)
-                ui.label(status_dot(lane.status)).classes("ml-auto")
+                ui.button(
+                    "Clear lane",
+                    on_click=lambda l=lid: _clear_lane(state, l, refresh_all),
+                ).props("outline").classes("ml-auto")
 
-            # Brief summary only (details go to Messages Panel)
-            if lane.status != LaneStatus.OK and lane.headline:
-                ui.label(lane.headline).classes("text-xs text-gray-700")
-
-            # Management actions
-            with ui.row().classes("items-center gap-2 mt-2"):
+            # ---------- Actions ----------
+            with ui.row().classes("items-center gap-2 mt-1"):
                 rm_sel = ui.select(
                     options=lane.project_ids,
                     label="Remove project(s)",
@@ -758,10 +810,7 @@ def build_lane_panel(state: RunState, refresh_all) -> None:
                     on_click=lambda l=lid, s=rm_sel: _rm_project(state, l, s.value, refresh_all),
                 ).props("outline")
 
-                ui.button(
-                    "Clear lane",
-                    on_click=lambda l=lid: _clear_lane(state, l, refresh_all),
-                ).props("outline")
+                    
 
 
 def _rm_project(state: RunState, lane_id: int, project_id: str | None, refresh_all) -> None:

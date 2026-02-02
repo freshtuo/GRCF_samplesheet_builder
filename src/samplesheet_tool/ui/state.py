@@ -119,6 +119,10 @@ class RunState:
     # Lane panel
     lanes: Dict[int, Lane] = field(default_factory=lambda: {i: Lane(i) for i in range(1, 9)})
 
+    # Assignment table
+    # assignments[sample_uid][lane_id] = planned_reads_m
+    assignments: Dict[str, Dict[int, int]] = field(default_factory=dict)
+
     # Samples panel
     samples_rows_per_page: int = 50 # number of samples to show in table
     # store selected sample_uids (UI selection)
@@ -136,6 +140,9 @@ class RunState:
             "lanes": {str(lid): asdict(l) for lid, l in self.lanes.items()},
             "samples_rows_per_page": self.samples_rows_per_page,
             "selected_sample_uids": self.selected_sample_uids,
+            "assignments": {
+                uid: {str(lid): int(v) for lid, v in per_lane.items()} for uid, per_lane in (self.assignments or {}).items()
+            },
         }
 
     @staticmethod
@@ -160,7 +167,12 @@ class RunState:
         rs.projects = {}
         for pid, pdata in (d.get("projects") or {}).items():
             samples = [Sample(**s) for s in pdata.get("samples", [])]
-            rs.projects[pid] = Project(project_id=pid, samples=samples)
+            rs.projects[pid] = Project(
+                project_id=pid, 
+                samples=samples, 
+                library_type=pdata.get("library_type"), 
+                index_type=pdata.get("index_type", "dual"), 
+            )
 
         # lanes
         rs.lanes = {}
@@ -181,6 +193,29 @@ class RunState:
         for i in range(1, 9):
             rs.lanes.setdefault(i, Lane(i))
 
+        # assignments
+        rs.assignments = {}
+        raw_asn = d.get("assignments") or {}
+        for uid, per_lane in raw_asn.items():
+            rs.assignments[uid] = {int(lid): int(v) for lid, v in (per_lane or {}).items()}
+        # for the sake of safety
+        # if assignments exist, rebuild lane.sample_uids/project_ids from assignments (gold truth)
+        # to avoid future bugs that may be introduced by e.g. update assignments while forgot to update lanes
+        if rs.assignments:
+            for lane in rs.lanes.values():
+                lane.sample_uids = []
+                lane.project_ids = []
+            for uid, per_lane in rs.assignments.items():
+                pid, _sid = split_sample_uid(uid)
+                for lid in per_lane.keys():
+                    lane = rs.lanes.get(int(lid))
+                    if not lane:
+                        continue
+                    if uid not in lane.sample_uids:
+                        lane.sample_uids.append(uid)
+                    if pid and pid not in lane.project_ids:
+                        lane.project_ids.append(pid)
+
         # samples panel: rows per page
         rs.samples_rows_per_page = int(d.get("samples_rows_per_page", 50))
         rs.selected_sample_uids = list(d.get("selected_sample_uids", []))
@@ -191,8 +226,8 @@ class RunState:
 def default_store_dir() -> Path:
     # internal tool: under user home directory, can be changed other directories later
     #base = Path.home() / ".samplesheet_tool_ui"
-    #base = Path("/gc11-data/analysis/taz2008/.samplesheet_tool_ui")
-    base = Path("/Users/freshtuo/Work/.samplesheet_tool_ui")
+    base = Path("/gc11-data/analysis/taz2008/.samplesheet_tool_ui")
+    #base = Path("/Users/freshtuo/Work/.samplesheet_tool_ui")
     base.mkdir(parents=True, exist_ok=True)
     return base
 
