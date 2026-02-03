@@ -1,0 +1,4 @@
+sample_id,i7_index_id,i7_index_seq,i5_index_id,i5_index_seq,required_reads_m
+S1,IDX01,ATCGATCG,IDX01,CGATCGAT,50
+S2,IDX02,GCTAGCTA,IDX02,TAGCTAGC,40
+S3,IDX03,TTAACCGG,IDX03,CCGGAATT,60
