@@ -180,8 +180,7 @@ class RunState:
             lid = int(lid_str)
             lane = Lane(
                 lane_id=lid,
-                # backward compatible: old plans may have "sample_ids"
-                sample_uids=ldata.get("sample_uids", ldata.get("sample_ids", [])),
+                sample_uids=ldata.get("sample_uids", []),
                 project_ids=ldata.get("project_ids", []),
                 status=LaneStatus(ldata.get("status", LaneStatus.OK)),
                 headline=ldata.get("headline", ""),

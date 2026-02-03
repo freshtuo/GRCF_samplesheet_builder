@@ -45,6 +45,48 @@ def lane_used_reads_m(state: RunState, lane_id: int) -> int:
 # toolbar
 # -------------------------
 
+SAMPLE_SUMMARY_COLUMNS = [
+    {"name": "project", "label": "Project", "field": "project", "sortable": True},
+    {"name": "sample", "label": "Sample", "field": "sample", "sortable": True},
+    {"name": "required", "label": "Required (M)", "field": "required", "sortable": True},
+    {"name": "allocated", "label": "Allocated (M)", "field": "allocated", "sortable": True},
+    {"name": "remaining", "label": "Remaining (M)", "field": "remaining", "sortable": True},
+    {"name": "status", "label": "Status", "field": "status", "sortable": True},
+    {"name": "lanes", "label": "Lanes", "field": "lanes"},
+]
+
+ASSIGNMENT_DETAIL_COLUMNS = [
+    {"name": "project", "label": "Project", "field": "project", "sortable": True},
+    {"name": "sample", "label": "Sample", "field": "sample", "sortable": True},
+    {"name": "lane", "label": "Lane", "field": "lane", "align": "right"},
+    {
+        "name": "planned_reads",
+        "label": "Planned reads (M)",
+        "field": "planned_reads",
+        "align": "right",
+        "sortable": True, 
+    },
+]
+
+PROJECT_SUMMARY_COLUMNS = [
+    {"name": "project", "label": "Project", "field": "project", "sortable": True},
+    {
+        "name": "n_samples",
+        "label": "# Samples",
+        "field": "n_samples",
+        "align": "right",
+        "sortable": True, 
+    },
+    {
+        "name": "total_allocated_reads",
+        "label": "Total allocated (M)",
+        "field": "total_allocated_reads",
+        "align": "right",
+        "sortable": True, 
+    },
+    {"name": "lanes", "label": "Lanes", "field": "lanes"},
+]
+
 def build_toolbar(state: RunState, refresh_all) -> None:
     """creates a full-width horizontal toolbar for global actions."""
     # A full-width row with vertically centered items and 8px (gap-2) spacing
@@ -58,6 +100,7 @@ def build_toolbar(state: RunState, refresh_all) -> None:
         ui.button("Open Plan", on_click=lambda: open_plan_dialog(state, refresh_all))
         ui.button("Save Plan", on_click=lambda: do_save_plan(state))
         ui.button("Validate", on_click=lambda: do_validate(state, refresh_all))
+        ui.button("Summary", on_click=lambda: open_summary_dialog(state))
 
         # Export button pushed to the far right using Tailwind's 'ml-auto'
         export_btn = ui.button("Export SampleSheet", on_click=lambda: do_export(state))
@@ -245,6 +288,8 @@ def open_plan_dialog(state: RunState, refresh_all) -> None:
             state.selected_project_id = new_state.selected_project_id
             state.lanes = new_state.lanes
             state.samples_rows_per_page = new_state.samples_rows_per_page
+            state.assignments = new_state.assignments
+            state.selected_sample_uids = new_state.selected_sample_uids
 
             # Close dialog and update the UI display
             ui.notify("Plan loaded", type="positive")
@@ -263,6 +308,114 @@ def do_validate(state: RunState, refresh_all) -> None:
     actions.validate_full_mock(state)
     ui.notify("Validation finished (mock)", type="positive")
     refresh_all()
+
+
+def open_summary_dialog(state: RunState) -> None:
+    with ui.dialog().props("persistent") as dialog:
+        with ui.card().classes("w-[1100px] max-w-full"):
+            # ---------- Header ----------
+            with ui.row().classes("w-full items-center"):
+                ui.label("Summary").classes("text-lg font-semibold")
+                ui.button(
+                    "Close",
+                    on_click=dialog.close,
+                ).props("flat").classes("ml-auto")
+
+            ui.separator()
+
+            # ---------- Controls ----------
+            with ui.row().classes("w-full items-center gap-4"):
+                view_sel = ui.select(
+                    options=[
+                        "Sample summary",
+                        "Assignment detail",
+                        "Project summary",
+                    ],
+                    value="Sample summary",
+                    label="View",
+                ).classes("w-56")
+
+                proj_opts = ["All"] + sorted(actions.get_projects_in_plan(state))
+                project_sel = ui.select(
+                    options=proj_opts,
+                    value="All",
+                    label="Project",
+                ).classes("w-56")
+
+            ui.separator()
+
+            # ---------- Content (placeholder for now) ----------
+            content = ui.element("div").classes(
+                "w-full min-h-[400px] text-sm text-gray-500"
+            )
+
+            def render_summary():
+                content.clear()
+
+                if view_sel.value == "Sample summary":
+                    rows = actions.build_sample_summary_rows(
+                        state, 
+                        project_filter=project_sel.value or "All", 
+                    )
+                    with content:
+                        ui.table(
+                            columns=SAMPLE_SUMMARY_COLUMNS, 
+                            rows=rows, 
+                            row_key="key", 
+                        ).props("dense").classes("w-full") \
+                        .add_slot("body-cell-status", r"""
+                            <q-td :props="props">
+                                <q-chip
+                                    dense
+                                    size="sm"
+                                    :color="{
+                                        OK: 'green',
+                                        Under: 'blue',
+                                        Over: 'orange'
+                                    }[props.value]"
+                                    text-color="white"
+                                >
+                                    {{
+                                        {
+                                            OK: '✓ OK',
+                                            Under: '▲ Under',
+                                            Over: '● Over'
+                                        }[props.value]
+                                    }}
+                                </q-chip>
+                            </q-td>
+                        """)
+                elif view_sel.value == "Assignment detail":
+                    rows = actions.build_assignment_detail_rows(
+                        state, 
+                        project_filter=project_sel.value or "All",
+                    )
+                    with content:
+                        ui.table(
+                            columns=ASSIGNMENT_DETAIL_COLUMNS,
+                            rows=rows,
+                            row_key="key",
+                        ).props("dense").classes("w-full")
+                elif view_sel.value == "Project summary":
+                    rows = actions.build_project_summary_rows(
+                        state, 
+                        project_filter=project_sel.value or "All", 
+                    )
+                    with content:
+                        ui.table(
+                            columns=PROJECT_SUMMARY_COLUMNS,
+                            rows=rows,
+                            row_key="key",
+                        ).props("dense").classes("w-full")
+
+            # bind refresh
+            view_sel.on_value_change(lambda _: render_summary())
+            project_sel.on_value_change(lambda _: render_summary())
+
+            # initial render
+            render_summary()
+
+    dialog.open()
 
 
 def do_export(state: RunState) -> None:
@@ -748,9 +901,6 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
 
 def build_lane_panel(state: RunState, refresh_all) -> None:
     """creates a monitoring and management panel for sequencing lanes."""
-    # legacy: make sure default reads are assigned to existing lanes/samples (can be removed in the final release)
-    actions.ensure_assignments_initialized(state)
-
     ui.label("Lanes").classes("text-base font-semibold")
 
     # Dense layout: fixed left column for status dot

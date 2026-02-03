@@ -8,6 +8,8 @@ from typing import List, Optional, Iterable, Set, Dict, Tuple
 from nicegui import ui
 from pathlib import Path
 
+from collections import defaultdict
+
 from samplesheet_tool.ui.state import (
     RunState, 
     LaneStatus, 
@@ -253,19 +255,6 @@ def remove_project(state: RunState, project_id: str) -> None:
 # Lane operations + mock validation
 # -------------------------
 
-def ensure_assignments_initialized(state: RunState) -> None:
-    """If lanes have data but assignments are empty (legacy), migrate lane membership into assignments with reads=0."""
-    if state.assignments:
-        return
-    any_lane_data = any(l.sample_uids for l in state.lanes.values())
-    if not any_lane_data:
-        return
-    for lid, lane in state.lanes.items():
-        for uid in (lane.sample_uids or []):
-            state.assignments.setdefault(uid, {})
-            state.assignments[uid].setdefault(int(lid), 40)
-
-
 def rebuild_lanes_from_assignments(state: RunState) -> None:
     """Sync lane.sample_uids and lane.project_ids from state.assignments (truth)."""
     for lane in state.lanes.values():
@@ -354,9 +343,6 @@ def assign_samples_to_lanes(
     - sync lane.sample_uids/project_ids (cache)
     - autosave plan
     """
-    # legacy: previous assignments data were not recorded, can be removed later
-    ensure_assignments_initialized(state)
-
     if not sample_uids or not lane_ids:
         return
     if planned_reads_m is None or int(planned_reads_m) <= 0:
@@ -416,6 +402,133 @@ def clear_lane(state: RunState, lane_id: int) -> None:
     rebuild_lanes_from_assignments(state)
     lane_recompute_mock(state, lane_id)
     save_plan(state)
+
+
+# -------------------------
+# Project / Sample summary
+# -------------------------
+
+def get_projects_in_plan(state: RunState) -> set[str]:
+    """Return project_ids that actually appear in the current sequencing plan."""
+    projects = set()
+    for uid in state.assignments.keys():
+        pid, _ = split_sample_uid(uid)
+        if pid:
+            projects.add(pid)
+    return projects
+
+
+def build_sample_summary_rows(state: RunState, project_filter: str = "All"):
+    """
+    project × sample
+        required / allocated / remaining / status / lanes
+    based ONLY on current plan (assignments).
+    """
+    rows = []
+
+    # collect all (project, sample) pairs that appear in assignments
+    sample_map = {}  # (pid, sid) -> {lane: reads}
+    for uid, per_lane in state.assignments.items():
+        pid, sid = split_sample_uid(uid)
+        if not pid:
+            continue
+        sample_map.setdefault((pid, sid), {})
+        for lane_id, reads in per_lane.items():
+            sample_map[(pid, sid)][lane_id] = int(reads)
+
+    for (pid, sid), per_lane in sample_map.items():
+        if project_filter != "All" and pid != project_filter:
+            continue
+
+        # lookup required_reads from project metadata (catalog only)
+        proj = state.projects.get(pid)
+        sample = None
+        if proj:
+            sample = next((s for s in proj.samples if s.sample_id == sid), None)
+
+        required = int(sample.required_reads_m) if sample and sample.required_reads_m else 0
+        allocated = sum(per_lane.values())
+        raw_remaining = required - allocated
+        remaining = max(raw_remaining, 0) # raw_remaining < 0 indicates no more additional reads required.
+
+        if raw_remaining == 0:
+            status = "OK"
+        elif raw_remaining > 0:
+            status = "Under"
+        else:
+            status = "Over"
+
+        lanes = ",".join(str(l) for l in sorted(per_lane.keys()))
+
+        rows.append({
+            "key": f"{pid}::{sid}", 
+            "project": pid,
+            "sample": sid,
+            "required": required,
+            "allocated": allocated,
+            "remaining": remaining,
+            "status": status,
+            "lanes": lanes,
+        })
+
+    return rows
+
+
+def build_assignment_detail_rows(state: RunState, project_filter: str = "All"):
+    """
+    project × sample x lane
+        planned_reads_m
+    based ONLY on current plan (assignments).
+    """
+    rows = []
+
+    for uid, per_lane in state.assignments.items():
+        pid, sid = split_sample_uid(uid)
+        if project_filter != "All" and pid != project_filter:
+            continue
+
+        for lane_id, reads in per_lane.items():
+            rows.append({
+                "key": f"{pid}::{sid}::lane{lane_id}",
+                "project": pid,
+                "sample": sid,
+                "lane": lane_id,
+                "planned_reads": int(reads),
+            })
+
+    return rows
+
+
+def build_project_summary_rows(state: RunState, project_filter: str = "All"):
+    """
+    project
+        n_samples / total_reads_m / lanes
+    based ONLY on current plan (assignments).
+    """
+    proj_reads = defaultdict(int)
+    proj_samples = defaultdict(set)
+    proj_lanes = defaultdict(set)
+
+    for uid, per_lane in state.assignments.items():
+        pid, sid = split_sample_uid(uid)
+        if project_filter != "All" and pid != project_filter:
+            continue
+
+        proj_samples[pid].add(sid)
+        for lane_id, reads in per_lane.items():
+            proj_reads[pid] += int(reads)
+            proj_lanes[pid].add(lane_id)
+
+    rows = []
+    for pid in sorted(proj_samples.keys()):
+        rows.append({
+            "key": pid,
+            "project": pid,
+            "n_samples": len(proj_samples[pid]),
+            "total_allocated_reads": proj_reads[pid],
+            "lanes": ",".join(str(x) for x in sorted(proj_lanes[pid])),
+        })
+    return rows
 
 
 def validate_full_mock(state: RunState) -> None:
