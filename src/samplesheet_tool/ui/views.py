@@ -204,6 +204,15 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
                 ui.notify("Project ID is required", type="negative")
                 return
 
+            if pid in state.projects:
+                ui.notify(
+                    f"Project ID '{pid}' already exists. "
+                    "Please use a different Project ID or remove the existing project first.",
+                    type="negative",
+                    timeout=6000, 
+                )
+                return
+
             if not uploaded["path"]:
                 ui.notify("Please upload a project file", type="negative")
                 return
