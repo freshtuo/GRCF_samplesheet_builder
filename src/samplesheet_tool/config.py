@@ -31,3 +31,5 @@ REQUIRED_CANONICAL_COLS = {COL_LANE, COL_SAMPLE_ID, COL_PROJECT_ID, COL_I7, COL_
 # lane range
 LANE_RANGE = set(str(i) for i in range(1, 9))
 
+# reads capacity per lane
+DEFAULT_LANE_CAPACITY_M = 1250  # NovaSeq X Plus 10B / 8 lanes
