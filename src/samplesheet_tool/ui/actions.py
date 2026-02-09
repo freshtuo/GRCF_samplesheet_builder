@@ -10,19 +10,29 @@ from pathlib import Path
 
 from collections import defaultdict
 
+import pandas as pd
+
 from samplesheet_tool.ui.state import (
     RunState, 
     LaneStatus, 
     Project, 
     Sample, 
     Message, MessageLevel, 
+    ValidationResult, 
     IndexMappingType, 
-    save_plan, load_plan,
+    save_plan, load_plan, default_store_dir, 
     make_sample_uid, split_sample_uid, 
     save_index_preset
 )
 
 from samplesheet_tool.ui.project_io import import_project_from_file
+
+from samplesheet_tool.config import (
+    COL_LANE, COL_SAMPLE_ID, COL_PROJECT_ID, COL_I7_ID, COL_I5_ID, COL_I7, COL_I5, DEFAULT_LANE_CAPACITY_M
+)
+
+from samplesheet_tool.io_normalize import check_required_columns, normalize_minimal
+from samplesheet_tool.validate import validate_all
 
 # -------------------------
 # Messages (persistent)
@@ -273,36 +283,51 @@ def rebuild_lanes_from_assignments(state: RunState) -> None:
                 lane.project_ids.append(pid)
 
 
-def lane_recompute_mock(state: RunState, lane_id: int) -> None:
-    """Mock lane validation.
+def lane_local_validate(state: RunState, lane_id: int) -> None:
+    """
+    Lane-local validation.
 
-    UI spec: Lane Panel shows summary only; Messages Panel holds details.
-    We therefore:
-      - set lane.status + lane.headline (summary)
-      - write duplicate details as messages (lane_validation)
+    Only checks conditions that can be determined within a single lane:
+      - duplicate sample_id
+      - duplicate index
+      - reads overflow
+
+    Lane Panel shows summary only;
+    Messages Panel holds detailed messages.
     """
     # Clear previous lane validation messages for this lane
-    state.messages = [m for m in state.messages if not (m.source == "lane_validation" and m.lane == lane_id)]
+    state.messages = [
+        m for m in state.messages 
+        if not (m.source == "lane_validation" and m.lane == lane_id)
+    ]
 
+    # fetch lane object
     lane = state.lanes[lane_id]
 
-    # simple rule A: duplicate sample_id within a lane --> ERROR
-    seen: Set[str] = set()
-    dups: List[str] = []
-    sample_ids = [split_sample_uid(x)[1] for x in lane.sample_uids]
-    for sid in sample_ids:
-        if sid in seen:
-            dups.append(sid)
-        seen.add(sid)
+    # default reset (will be upgraded if any issue found)
+    lane.status = LaneStatus.OK
+    lane.headline = ""
+    lane.details = []
 
-    # simple rule B:  > 40 samples -> warning
-    too_many = len(lane.sample_uids) > 40
+    # --------------------------------------------------
+    # Rule 1: duplicate sample_id within the lane -> ERROR
+    # --------------------------------------------------
+    seen_samples: Set[str] = set()
+    dup_samples: Set[str] = set()
 
-    if dups:
+    for uid in lane.sample_uids:
+        _, sid = split_sample_uid(uid)
+        if sid in seen_samples:
+            dup_samples.add(sid)
+        else:
+            seen_samples.add(sid)
+
+    if dup_samples:
         lane.status = LaneStatus.ERROR
-        lane.headline = f"Duplicate sample_id ({len(dups)})"
+        lane.headline = f"Duplicate sample_id ({len(dup_samples)})"
         lane.details = [] # keep lane clean, details go to Messages panel
-        for sid in dups[:50]:
+
+        for sid in sorted(dup_samples):
             push_message(
                 state,
                 "error",
@@ -311,21 +336,77 @@ def lane_recompute_mock(state: RunState, lane_id: int) -> None:
                 lane=lane_id,
                 sample_id=sid,
             )
+
+        # fatal for this lane; no need to continue checking others
         return
 
-    if too_many:
-        lane.status = LaneStatus.WARNING
-        lane.headline = f"High sample count (samples={len(lane.sample_uids)})"
-        lane.details = []
+    # --------------------------------------------------
+    # Rule 2: duplicate index within the lane -> ERROR
+    # --------------------------------------------------
+    seen_indexes: Set[tuple] = set()
+    dup_indexes: Set[tuple] = set()
+
+    for uid in lane.sample_uids:
+        pid, sid = split_sample_uid(uid)
+        proj = state.projects.get(pid)
+        if not proj:
+            continue
+
+        sample = next(
+            (s for s in proj.samples if s.sample_id == sid), 
+            None, 
+        )
+        if not sample:
+            continue
+
+        # index key: (i7, i5) or just (i7,) depending on data model
+        idx_key = (sample.i7_seq, sample.i5_seq)
+
+        if idx_key in seen_indexes:
+            dup_indexes.add(idx_key)
+        else:
+            seen_indexes.add(idx_key)
+
+    if dup_indexes:
+        lane.status = LaneStatus.ERROR
+        lane.headline = f"Duplicate index ({len(dup_indexes)})"
+
+        for idx in sorted(dup_indexes):
+            push_message(
+                state,
+                "error",
+                f"Duplicate index in lane {lane_id}: i7={idx[0]}, i5={idx[1]}",
+                source="lane_validation",
+                lane=lane_id,
+            )
+
+        # fatal for this lane; no need to continue checking others
+        return
+
+    # --------------------------------------------------
+    # Rule 3: reads overflow -> ERROR
+    # --------------------------------------------------
+    used = sum(
+        state.assignments.get(uid, {}).get(lane_id, 0)
+        for uid in lane.sample_uids
+    )
+    if used > DEFAULT_LANE_CAPACITY_M:
+        lane.status = LaneStatus.ERROR
+        lane.headline = f"Reads overflow ({used} > {DEFAULT_LANE_CAPACITY_M} M)"
+
         push_message(
-            state,
-            "warning",
-            f"Lane {lane_id} has a high sample count: {len(lane.sample_uids)}",
+            state, 
+            "error",
+            f"Lane {lane_id} exceeds capacity: {used} > {DEFAULT_LANE_CAPACITY_M} M",
             source="lane_validation",
             lane=lane_id,
         )
+
         return
 
+    # --------------------------------------------------
+    # If we reach here, lane is clean
+    # --------------------------------------------------
     lane.status = LaneStatus.OK
     lane.headline = ""
     lane.details = []
@@ -358,7 +439,7 @@ def assign_samples_to_lanes(
 
     # keep existing lane mock validation for now
     for lid in lane_ids:
-        lane_recompute_mock(state, int(lid))
+        lane_local_validate(state, int(lid))
 
     save_plan(state)
 
@@ -380,7 +461,7 @@ def remove_project_from_lane(state: RunState, lane_id: int, project_id: str) -> 
         del state.assignments[uid]
 
     rebuild_lanes_from_assignments(state)
-    lane_recompute_mock(state, lane_id)
+    lane_local_validate(state, lane_id)
     save_plan(state)
 
 
@@ -400,7 +481,7 @@ def clear_lane(state: RunState, lane_id: int) -> None:
         del state.assignments[uid]
 
     rebuild_lanes_from_assignments(state)
-    lane_recompute_mock(state, lane_id)
+    lane_local_validate(state, lane_id)
     save_plan(state)
 
 
@@ -531,54 +612,267 @@ def build_project_summary_rows(state: RunState, project_filter: str = "All"):
     return rows
 
 
-def validate_full_mock(state: RunState) -> None:
+# ============================================================
+# Validation & Export
+# ============================================================
+
+PROBLEM_LEVEL_TO_LANE_STATUS = {
+    "ERROR": LaneStatus.ERROR,
+    "WARN": LaneStatus.WARNING,
+    "INFO": LaneStatus.OK, 
+}
+
+class PlanIntegrityError(RuntimeError):
+    """Raised when lanes reference projects/samples removed from state.projects."""
+    pass
+
+
+def _iter_plan_samples(state: RunState):
     """
-    Final validation (mock) per your rules:
-    A) same (project_id, sample_id) across lanes -> allowed
-    B) same sample_id across projects -> ERROR
-    C) duplicate sample_id within same project -> ERROR
+    Yield (lane_id, project_id, sample_id, Sample|None).
+    lanes -> assignments are already synced (assumed true).
     """
-    # mock: re-compute for all lanes
-    for lid in state.lanes:
-        lane_recompute_mock(state, lid)
+    for lane_id, lane in state.lanes.items():
+        for uid in lane.sample_uids:
+            pid, sid = split_sample_uid(uid)
+            proj = state.projects.get(pid)
+            sample = None
+            if proj is not None:
+                sample = next((s for s in proj.samples if s.sample_id == sid), None)
+            yield lane_id, pid, sid, sample
 
-    # BUGs includes!!!
-    # this is NOT right, the validation should be done within each lane, 
-    # not necessarily across all projects, since not all projects are used in lanes
-    errors: List[str] = []
 
-    # C
-    for pid, proj in state.projects.items():
-        seen = set()
-        for s in proj.samples:
-            if s.sample_id in seen:
-                push_message(
-                    state,
-                    "error",
-                    f"Duplicate sample_id within project {pid}: {s.sample_id}.",
-                    source="lane_validation",
-                    sample_id=s.sample_id,
-                    project_id=pid,
-                )
-                errors.append(f"Duplicate sample_id within project {pid}: {s.sample_id}")
-            seen.add(s.sample_id)
+def ensure_plan_integrity_or_raise(state: RunState) -> None:
+    """
+    If any lane references a project/sample not present in Projects panel, raise.
+    For case: removing project from projects panel does NOT mutate lanes, so samplesheet build would fail.
+    """
+    missing_projects = set()
+    missing_samples = []  # list of (lane_id, pid, sid)
 
-    # B
-    sid_to_projects: dict[str, set[str]] = {}
-    for pid, proj in state.projects.items():
-        for s in proj.samples:
-            sid_to_projects.setdefault(s.sample_id, set()).add(pid)
-    for sid, pset in sid_to_projects.items():
-        if len(pset) > 1:
-            errors.append(f"sample_id used in multiple projects: {sid} -> {sorted(pset)}")
+    for lane_id, pid, sid, sample in _iter_plan_samples(state):
+        if pid not in state.projects:
+            missing_projects.add(pid)
+            missing_samples.append((lane_id, pid, sid))
+            continue
+        if sample is None:
+            missing_samples.append((lane_id, pid, sid))
 
-    if errors:
-        # 暂时用“所有 lanes 标红 + details”来呈现全局错误（以后可替换成 Messages panel）
-        for lid in state.lanes:
-            lane = state.lanes[lid]
+    if missing_projects or missing_samples:
+        msg = (
+            "Lane plan references a project/sample that is missing from Projects panel. "
+            "Project may have been removed. Please re-import the project to proceed.\n"
+        )
+        if missing_projects:
+            msg += f"Missing project_ids: {sorted(missing_projects)}\n"
+        if missing_samples:
+            preview = missing_samples[:20]
+            msg += "Missing samples (lane, project, sample) examples: " + ", ".join(
+                f"({l},{p},{s})" for l, p, s in preview
+            )
+            if len(missing_samples) > 20:
+                msg += f" ... (+{len(missing_samples)-20} more)"
+        raise PlanIntegrityError(msg)
+
+
+def build_samplesheet_df_from_lanes(state: RunState) -> pd.DataFrame:
+    """
+    Build canonical samplesheet dataframe using lanes as the truth source.
+    Uses project metadata to fill index ids/sequences (because lanes only store uid).
+    No required_reads logic; no optimization; no auto-fix.
+    """
+    ensure_plan_integrity_or_raise(state)
+
+    rows = []
+    for lane_id, pid, sid, sample in _iter_plan_samples(state):
+        # after integrity check, sample should exist
+        assert sample is not None
+
+        rows.append({
+            COL_LANE: int(lane_id),
+            COL_PROJECT_ID: pid,
+            COL_SAMPLE_ID: sid,
+            COL_I7_ID: sample.i7_id or "",
+            COL_I5_ID: sample.i5_id or "",
+            COL_I7: sample.i7_seq or "",
+            COL_I5: sample.i5_seq or "",
+        })
+
+    df = pd.DataFrame(rows, columns=[
+        COL_LANE, COL_PROJECT_ID, COL_SAMPLE_ID, COL_I7_ID, COL_I5_ID, COL_I7, COL_I5
+    ])
+
+    # even if empty, keep schema
+    if df.empty:
+        return df
+
+    # schema check + minimal normalization (uppercase seq, strip IDs, lane int)
+    check_required_columns(df)
+    return normalize_minimal(df)
+
+
+def cli_validate_samplesheet_file(samplesheet_file: Path) -> ValidationResult:
+    """
+    CLI is the only judge. This is a small adapter calling existing CLI validate logic.
+    """
+    df = pd.read_csv(samplesheet_file)
+    df = normalize_minimal(df)
+    summary = validate_all(df)  # returns ValidationSummary(problems, lane_barcode_mismatches)
+
+    return ValidationResult(
+        problems=summary.problems, 
+        lane_barcode_mismatches=summary.lane_barcode_mismatches, 
+    )
+
+
+def apply_validation_result_to_lanes(
+    state: RunState,
+    vr: ValidationResult,
+) -> None:
+    """
+    Final validation is authoritative.
+    It may override lane.status set by lane_local_validate.
+    Only upgrades risk; never downgrade lane_local_validate results.
+    """
+    # barcode mismatch -> WARNING
+    #   make sure WARNING does NOT override ERROR (never downgrade!!)
+    for lid, n in vr.lane_barcode_mismatches.items():
+        if n == 0 and lid in state.lanes and state.lanes[lid].status != LaneStatus.ERROR:
+            state.lanes[lid].status = LaneStatus.WARNING
+    
+    # problems override (ERROR > WARNING)
+    for p in vr.problems:
+        if p.lane is None:
+            # run-level problem
+            # push_message, no chane on lane.status
+            continue
+
+        lane = state.lanes.get(p.lane)
+        if not lane:
+            continue
+
+        if p.level == "ERROR":
             lane.status = LaneStatus.ERROR
-            lane.headline = "Sample naming error"
-            lane.details = errors[:8]
+        elif p.level == "WARN" and lane.status != LaneStatus.ERROR:
+            lane.status = LaneStatus.WARNING
+
+
+def infer_project_id_for_problem(
+    state: RunState, 
+    p: Problem, 
+) -> Optional[str]:
+    """
+    Return:
+      - project_id if uniquely identifiable
+      - "ambiguous" if multiple projects match
+      - None if cannot infer
+    """
+    if not p.lane or not p.sample_id:
+        return None
+
+    lane = state.lanes.get(p.lane)
+    if not lane:
+        return None
+
+    projects = set()
+    for uid in lane.sample_uids:
+        pid, sid = split_sample_uid(uid)
+        if sid == p.sample_id:
+            projects.add(pid)
+
+    if len(projects) == 1:
+        return next(iter(projects))
+    if len(projects) > 1:
+        return "ambiguous"
+
+    return None
+
+
+def validate_current_plan(state: RunState) -> ValidationResult:
+    """
+    UI Validate behavior:
+      - clear messages panel
+      - build samplesheet from lanes
+      - write temp CSV
+      - call CLI validate(temp_file)
+      - write errors/warnings to messages
+      - cache to state.validation_result
+    """
+    # strict: validation clears messages panel
+    state.messages.clear()
+
+    try:
+        df = build_samplesheet_df_from_lanes(state)
+    except PlanIntegrityError as e:
+        # write message + cache failed result
+        push_message(state, "error", str(e), source="validation")
+        res = ValidationResult(errors=[str(e)], warnings=[])
+        state.validation_result = res
+        save_plan(state)
+        return res
+
+    tmp = default_store_dir() / "_tmp_samplesheet_for_validation.csv"
+    df.to_csv(tmp, index=False)
+
+    res = cli_validate_samplesheet_file(tmp)
+
+    # update lane status based on validation_result
+    apply_validation_result_to_lanes(state, res)
+
+    # check if there's any run-level errors, i.e. lane info missing
+    state.has_run_level_error = any(
+        p.level == "ERROR" and p.lane is None
+        for p in res.problems
+    )
+
+    # push validation results to Messages panel
+    for p in res.problems:
+        # infer project_id based on sample_id
+        # return unique project_id or "ambiguous"
+        project_id = infer_project_id_for_problem(state, p)
+
+        # push to Messages panel
+        push_message(
+            state, 
+            level=PROBLEM_LEVEL_TO_LANE_STATUS[p.level], 
+            text=p.message, 
+            source="validation", 
+            lane=p.lane, 
+            project_id=project_id, 
+            sample_id=p.sample_id, 
+        )
+
+    state.validation_result = res
+    save_plan(state)
+    return res
+
+
+def export_samplesheet(state: RunState) -> Path:
+    """
+    Export always assumes caller already gated by validation.
+    Still re-check plan integrity to avoid crash.
+    """
+    df = build_samplesheet_df_from_lanes(state)
+
+    out_dir = default_store_dir()
+    ts = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = out_dir / f"samplesheet_{ts}.csv"
+    df.to_csv(out_path, index=False)
+
+    # validation meta info
+    res = state.validation_result
+
+    meta = {
+        "ok": res.ok, 
+        "errors": res.errors, 
+        "warning": res.warnings, 
+        "lane_barcode_mismatches": res.lane_barcode_mismatches, 
+    }
+
+    meta_path = out_path.with_suffix(".validation.json")
+    meta_path.write_text(json.dumps(meta, indent=2))
+
+    return out_path
 
 
 # -------------------------

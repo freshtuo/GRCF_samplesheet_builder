@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 from datetime import datetime
 
+from samplesheet_tool.utils import Problem
+
 
 SAMPLE_UID_SEP = "::"
 
@@ -17,7 +19,6 @@ class LaneStatus(str, Enum):
     OK = "ok"
     WARNING = "warning"
     ERROR = "error"
-
 
 MessageLevel = Literal["error", "warning"]
 
@@ -34,6 +35,25 @@ class Message:
     project_id: Optional[str] = None
     sample_id: Optional[str] = None
     ts: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    """Result returned by CLI validation."""
+    problems: List[Problem] = field(default_factory=list)
+    lane_barcode_mismatches: Dict[int, int] = field(default_factory=dict)
+
+    @property
+    def errors(self) -> List[Problem]:
+        return [p for p in self.problems if p.level == "ERROR"]
+
+    @property
+    def warnings(self) -> List[Problem]:
+        return [p for p in self.problems if p.level == "WARN"]
+
+    @property
+    def ok(self) -> bool:
+        return len(self.errors) == 0
 
 
 IndexMappingType = Literal["dual", "single"]
@@ -112,6 +132,9 @@ class RunState:
     # Messages panel (Errors/Warnings only; persistent)
     messages: List[Message] = field(default_factory=list)
 
+    # Validation cache (None = never validated or invalidated)
+    validation_result: Optional[ValidationResult] = None
+
     # Project panel
     projects: Dict[str, Project] = field(default_factory=dict)
     selected_project_id: Optional[str] = None
@@ -122,6 +145,9 @@ class RunState:
     # Assignment table
     # assignments[sample_uid][lane_id] = planned_reads_m
     assignments: Dict[str, Dict[int, int]] = field(default_factory=dict)
+
+    # Run level error
+    has_run_level_error: bool = False
 
     # Samples panel
     samples_rows_per_page: int = 50 # number of samples to show in table
@@ -143,6 +169,7 @@ class RunState:
             "assignments": {
                 uid: {str(lid): int(v) for lid, v in per_lane.items()} for uid, per_lane in (self.assignments or {}).items()
             },
+            # no serializaion on validation_result
         }
 
     @staticmethod
@@ -219,6 +246,9 @@ class RunState:
         rs.samples_rows_per_page = int(d.get("samples_rows_per_page", 50))
         rs.selected_sample_uids = list(d.get("selected_sample_uids", []))
 
+        # validation_result (no serializaion)
+        rs.validation_result = None
+        
         return rs
 
 

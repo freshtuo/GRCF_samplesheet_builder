@@ -15,6 +15,7 @@ from samplesheet_tool.ui.state import (
     make_sample_uid, split_sample_uid, 
 )
 from samplesheet_tool.ui import actions
+from samplesheet_tool.config import DEFAULT_LANE_CAPACITY_M
 
 # -------------------------
 # small helpers
@@ -32,14 +33,24 @@ def status_dot(status: LaneStatus) -> str:
 # lane reads helpers
 # -------------------------
 
-DEFAULT_LANE_CAPACITY_M = 1250  # NovaSeq X Plus 10B / 8 lanes
-
 def lane_used_reads_m(state: RunState, lane_id: int) -> int:
     total = 0
     for _uid, per_lane in state.assignments.items():
         total += int(per_lane.get(lane_id, 0))
     return total
 
+# -------------------------
+# decorator: if anything changes, invalidate the validation state
+# -------------------------
+
+def invalidate_validation(state: RunState):
+    def decorator(fn):
+        def wrapper(*args, **kwargs):
+            state.validation_result = None
+            state.has_run_level_error = False
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
 
 # -------------------------
 # toolbar
@@ -92,6 +103,15 @@ def build_toolbar(state: RunState, refresh_all) -> None:
     # A full-width row with vertically centered items and 8px (gap-2) spacing
     with ui.row().classes("w-full items-center gap-2"):
         ui.label("SampleSheet Tool (UI MVP)").classes("text-lg font-semibold")
+
+        if state.has_run_level_error:
+            ui.badge(
+                "Run-level error",
+                color="red"
+            ).tooltip(
+                "There are validation errors not specific to any lane. "
+                "Check the Messages panel for details."
+            )
 
         ui.separator().props("vertical")
 
@@ -314,8 +334,12 @@ def do_save_plan(state: RunState) -> None:
 
 
 def do_validate(state: RunState, refresh_all) -> None:
-    actions.validate_full_mock(state)
-    ui.notify("Validation finished (mock)", type="positive")
+    actions.validate_current_plan(state)
+    if state.validation_result:
+        if state.validation_result.ok:
+            ui.notify("Validation completed OK.", type="positive")
+        else:
+            ui.notify("Validation failed.", type="negative")
     refresh_all()
 
 
@@ -428,7 +452,7 @@ def open_summary_dialog(state: RunState) -> None:
 
 
 def do_export(state: RunState) -> None:
-    actions.validate_full_mock(state)
+    actions.validate_current_plan(state)
     if not actions.has_any_data(state):
         ui.notify("Cannot export: no samples assigned to any lane", type="warning")
         return
@@ -871,6 +895,7 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
             step=10,
         ).classes("w-56")
 
+        @invalidate_validation(state)
         def do_add():
             selected = table.selected or []
             sample_uids = [r["sample_uid"] for r in selected]
@@ -916,14 +941,25 @@ def build_lane_panel(state: RunState, refresh_all) -> None:
     for lid in range(1, 9):
         lane = state.lanes[lid]
 
+        def make_on_remove_project(lid: int):
+            @invalidate_validation(state)
+            def handler(pid: str):
+                _rm_project(state, lid, pid, refresh_all)
+            return handler
+
+        _on_remove_project = make_on_remove_project(lid)
+
+        def make_on_clear_lane(lid: int):
+            @invalidate_validation(state)
+            def handler():
+                _clear_lane(state, lid, refresh_all)
+            return handler
+        _on_clear_lane = make_on_clear_lane(lid)
+
         with ui.card().classes("w-full mb-2"):
             used = lane_used_reads_m(state, lid)
             capacity = DEFAULT_LANE_CAPACITY_M
             pct = used / capacity if capacity > 0 else 0
-
-            # UI-level overflow rule
-            if pct >= 1.0:
-                lane.status = LaneStatus.ERROR
 
             # ---------- Line 1: status + lane + reads + progress ----------
             with ui.row().classes("w-full items-center gap-2"):
@@ -954,26 +990,32 @@ def build_lane_panel(state: RunState, refresh_all) -> None:
 
                 ui.button(
                     "Clear lane",
-                    on_click=lambda l=lid: _clear_lane(state, l, refresh_all),
+                    on_click=_on_clear_lane
                 ).props("outline").classes("ml-auto")
 
             # ---------- Actions ----------
             with ui.row().classes("items-center gap-2 mt-1"):
+                # local buffer to store selected project
+                rm_selected = {"pid": None}
+
                 rm_sel = ui.select(
                     options=lane.project_ids,
                     label="Remove project(s)",
                 ).classes("w-56")
 
+                # freeze rm_selected for this lane
+                rm_sel.on_value_change(lambda e, _buf=rm_selected: _buf.__setitem__("pid", e.value))
+
+                # freeze handler + buffer for this lane
                 ui.button(
                     "Remove",
-                    on_click=lambda l=lid, s=rm_sel: _rm_project(state, l, s.value, refresh_all),
+                    on_click=lambda _h=_on_remove_project, _buf=rm_selected: _h(_buf["pid"]),
                 ).props("outline")
-
-                    
 
 
 def _rm_project(state: RunState, lane_id: int, project_id: str | None, refresh_all) -> None:
     """Remove projects from a lane."""
+    ###ui.notify(f"Removing project {project_id} from lane {lane_id}", type="info") # debug only
     # Guard against empty selection
     if not project_id:
         ui.notify("Select a project to remove", type="warning")
