@@ -162,13 +162,30 @@ def validate_sample_ids(
     if not collided.empty:
         bad_sids = collided.index.tolist()
         for sid in bad_sids:
+            # fetch affected lanes
+            lanes = sorted(
+                df.loc[df[sample_id_col].astype(str) == str(sid), lane_col]
+                .dropna()
+                .astype(int)
+                .unique()
+                .tolist()
+            )
+            # select one lane to report, incomplete info but useful
+            lane_hint = lanes[0] if lanes else None
+
+            # fetch affected projects
             projects = sorted(df.loc[df[sample_id_col].astype(str) == str(sid), project_id_col].astype(str).unique().tolist())
+
+            # record problem
             probs.append(
                 Problem(
                     level="ERROR",
                     code="SAMPLE_ID_PROJECT_COLLISION",
-                    message=f"sample_id '{sid}' appears in multiple projects: {', '.join(projects)}",
-                    lane=None,
+                    message=(
+                        f"sample_id '{sid}' appears in multiple projects: {', '.join(projects)}"
+                        + (f" (lanes: {', '.join(map(str, lanes))})" if lanes else "")
+                    ),
+                    lane=lane_hint,
                     sample_id=str(sid)
                 )
             )
