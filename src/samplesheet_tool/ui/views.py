@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 
 from samplesheet_tool.ui.state import (
-    RunState, LaneStatus, Message, 
+    RunState, LaneStatus, PlanIntegrityError, Message, 
     save_plan, load_plan, default_store_dir, 
     make_sample_uid, split_sample_uid, 
 )
@@ -104,7 +104,7 @@ def build_toolbar(state: RunState, refresh_all) -> None:
     """creates a full-width horizontal toolbar for global actions."""
     # A full-width row with vertically centered items and 8px (gap-2) spacing
     with ui.row().classes("w-full items-center gap-2"):
-        ui.label("SampleSheet Tool (UI MVP)").classes("text-lg font-semibold")
+        ui.label("GRCF SampleSheet Tool").classes("text-lg font-semibold")
 
         if state.has_run_level_error:
             ui.badge(
@@ -464,14 +464,79 @@ def open_summary_dialog(state: RunState) -> None:
 
 
 def do_export(state: RunState) -> None:
+    """Export plan to samplesheet files"""
+    # force to validate the current plan
     actions.validate_current_plan(state)
+
+    # pre-check
     if not actions.has_any_data(state):
         ui.notify("Cannot export: no samples assigned to any lane", type="warning")
         return
     if not actions.can_export(state):
-        ui.notify("Cannot export: Errors present (mock)", type="negative")
+        ui.notify("Cannot export: Errors present", type="negative")
         return
-    ui.notify("Exported SampleSheet (mock)", type="positive")
+
+    with ui.dialog() as dialog, ui.card().classes("w-[520px]"):
+        ui.label("Export SampleSheet").classes("text-base font-semibold")
+
+        out_dir = ui.input(
+            "Output directory", 
+            value=str(default_store_dir()), 
+        ).classes("w-full")
+
+        prefix = ui.input(
+            "File prefix", 
+            placeholder="e.g. 20260210_NovaSeq_FCA", 
+        ).classes("w-full")
+
+        ui.label("Output format")
+
+        fmt = ui.radio(
+            options={
+                "basespace": "BaseSpace sequencing plan", 
+                "iem": "IEM samplesheet", 
+            }, 
+            value="basespace", 
+        )
+
+        with ui.row().classes("justify-end gap-2 mt-4"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+            ui.button(
+                "Export",
+                on_click=lambda: _do_export_confirm(
+                    state, 
+                    out_dir.value, 
+                    prefix.value, 
+                    fmt.value, 
+                    dialog, 
+                ),
+            ).props("unelevated")
+
+    dialog.open()
+
+
+def _do_export_confirm(state: RunState, out_dir: str, prefix: str, fmt: str, dialog):
+    if not out_dir:
+        ui.notify("Output directory is required", type="negative")
+        return
+
+    if not prefix:
+        ui.notify("File prefix is required", type="negative")
+        return
+
+    try:
+        paths = actions.export_samplesheets(
+            state=state, 
+            output_dir=Path(out_dir), 
+            prefix=prefix, 
+            format=fmt,
+        )
+    except PlanIntegrityError as e:
+        ui.notify(f"Export failed: {e}", type="negative")
+        return
+
+    dialog.close()
+    ui.notify(f"Exported {len(paths)} file(s)", type="positive")
 
 
 # -------------------------

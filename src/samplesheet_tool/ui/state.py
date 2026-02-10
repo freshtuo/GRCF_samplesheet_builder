@@ -8,9 +8,11 @@ from enum import Enum
 from typing import Dict, List, Optional, Literal, Tuple, Any
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date
+from collections import defaultdict
 
 from samplesheet_tool.utils import Problem
+from samplesheet_tool.config import MAX_SAVED_PLANS
 
 
 SAMPLE_UID_SEP = "::"
@@ -19,6 +21,10 @@ class LaneStatus(str, Enum):
     OK = "ok"
     WARNING = "warning"
     ERROR = "error"
+
+class PlanIntegrityError(RuntimeError):
+    """Raised when lanes reference projects/samples removed from state.projects."""
+    pass
 
 MessageLevel = Literal["error", "warning"]
 
@@ -121,6 +127,134 @@ class Lane:
     status: LaneStatus = LaneStatus.OK
     headline: str = ""
     details: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SampleSheetRow:
+    lane: int
+    project_id: str
+    sample_id: str
+    i7_id: str
+    i7_seq: str
+    i5_id: str
+    i5_seq: str
+    sequencing_type: str
+
+
+class BaseRenderer:
+    def render(self, rows: list[SampleSheetRow]) -> str:
+        raise NotImplementedError
+
+
+class BaseSpaceRenderer(BaseRenderer):
+    def render(self, rows: list[SampleSheetRow]) -> str:
+        lines = [
+            "Lane,Sample_ID,Index,Index2,BarcodeMismatchesIndex1,BarcodeMismatchesIndex2,Sample_Project,Description"
+        ]
+
+        merged = defaultdict(lambda: {
+            "lanes": set(), 
+            "row": None, 
+        })
+
+        # merge by (project_id, sample_id)
+        for r in rows:
+            # set key
+            key = (r.project_id, r.sample_id)
+
+            # merge lanes
+            merged[key]["lanes"].add(r.lane)
+
+            # double check, make sure identical project/sample should share the same sequencing type, otherwise raise an exception
+            if merged[key]["row"] and merged[key]["row"].sequencing_type != r.sequencing_type:
+                raise PlanIntegrityError(
+                    f"Inconsistent sequencing_type for {r.project_id}/{r.sample_id}"
+                )
+            
+            # store 'shared' information
+            merged[key]["row"] = r # last one is fine; other fields identical
+
+        for key in sorted(merged.keys()):
+            item = merged[key]
+            r = item["row"]
+            lane_str = ",".join(str(l) for l in sorted(item["lanes"]))
+
+            lines.append(
+                ",".join([
+                    lane_str, 
+                    r.sample_id,
+                    r.i7_seq,
+                    r.i5_seq or "", # in case single-index, no i5 index
+                    '1',            # for now, set mismatches to 1 since we still use BaseSpace sequencing planner
+                    '1',            # for now, set mismatches to 1 since we still use BaseSpace sequencing planner
+                    r.project_id,
+                    r.sequencing_type
+                ])
+            )
+
+        return "\n".join(lines) + "\n"
+
+
+class IEMRenderer(BaseRenderer):
+    def __init__(
+        self, 
+        *, 
+        read1: int = 101, 
+        read2: int = 101, 
+        instrument: str = "NovaSeq", 
+        chemistry: str = "Amplicon", 
+    ):
+        self.read1 = read1
+        self.read2 = read2
+        self.instrument = instrument
+        self.chemistry = chemistry
+
+    def render(self, rows: list[SampleSheetRow]) -> str:
+        lines: list[str] = []
+
+        # -------- Header --------
+        lines.append("[Header],,,,,,,,,,,")
+        lines.append("IEMFileVersion,5,,,,,,,,,,")
+        lines.append(f"Date,{date.today().strftime('%m/%d/%Y')},,,,,,,,,,")
+        lines.append("Workflow,GenerateFASTQ,,,,,,,,,,")
+        lines.append("Application,NovaSeq_FASTQ_Only,,,,,,,,,,")
+        lines.append(f"Instrument_Type,{self.instrument},,,,,,,,,,")
+        lines.append(f"Chemistry,{self.chemistry},,,,,,,,,,")
+        lines.append(",,,,,,,,,,,")
+
+        # -------- Reads --------
+        lines.append("[Reads],,,,,,,,,,,")
+        lines.append(f"{self.read1},,,,,,,,,,,")
+        lines.append(f"{self.read2},,,,,,,,,,,")
+        lines.append(",,,,,,,,,,,")
+
+        # -------- Settings --------
+        lines.append("[Settings],,,,,,,,,,,")
+        lines.append(",,,,,,,,,,,")
+
+        # -------- Data --------
+        lines.append("[Data],,,,,,,,,,,")
+        lines.append("Lane,Sample_ID,Sample_Name,Sample_Plate,Sample_Well,Index_Plate_Well,I7_Index_ID,index,I5_Index_ID,index2,Sample_Project,Description")
+
+        for r in rows:
+            lines.append(
+                ",".join([
+                    str(r.lane), 
+                    r.sample_id,
+                    "",             # Sample_Name
+                    "",             # Sample_Plate
+                    "",             # Sample_Well
+                    "",             # Index_Plate_Well
+                    r.i7_id or "",
+                    r.i7_seq,
+                    r.i5_id or "",  # in case single-index, no i5 index
+                    r.i5_seq or "", # in case single-index, no i5 index
+                    r.project_id,
+                    r.sequencing_type,
+                ])
+            )
+
+        return "\n".join(lines) + "\n"
 
 
 @dataclass
@@ -265,16 +399,41 @@ def default_store_dir() -> Path:
 
 def save_plan(state: RunState, path: Optional[Path] = None) -> Path:
     store = default_store_dir()
+
     if path is None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = store / f"plan_{ts}.json"
     path.write_text(json.dumps(state.to_dict(), indent=2), encoding="utf-8")
+
+    # clean up old plans
+    cleanup_saved_plans(store)
+    
     return path
 
 
 def load_plan(path: Path) -> RunState:
     d = json.loads(path.read_text(encoding="utf-8"))
     return RunState.from_dict(d)
+
+
+def cleanup_saved_plans(store_dir: Path) -> None:
+    """
+    Keep only the newest MAX_SAVED_PLANS plan files in store_dir.
+    """
+    if not store_dir.exists():
+        return
+
+    plans = sorted(
+        store_dir.glob("plan_*.json"),
+        key=lambda p: p.stat().st_mtime, 
+        reverse=True, 
+    )
+
+    for p in plans[MAX_SAVED_PLANS:]:
+        try:
+            p.unlink()
+        except Exception:
+            pass
 
 
 # -------------------------

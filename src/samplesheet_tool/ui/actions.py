@@ -14,12 +14,13 @@ import pandas as pd
 
 from samplesheet_tool.ui.state import (
     RunState, 
-    LaneStatus, 
+    LaneStatus, PlanIntegrityError, 
     Project, 
     Sample, 
     Message, MessageLevel, 
     ValidationResult, 
     IndexMappingType, 
+    SampleSheetRow, BaseSpaceRenderer, IEMRenderer, 
     save_plan, load_plan, default_store_dir, 
     make_sample_uid, split_sample_uid, 
     save_index_preset
@@ -264,7 +265,7 @@ def remove_project(state: RunState, project_id: str) -> None:
 
 
 # -------------------------
-# Lane operations + mock validation
+# Lane operations
 # -------------------------
 
 def rebuild_lanes_from_assignments(state: RunState) -> None:
@@ -437,6 +438,7 @@ def assign_samples_to_lanes(
         for lid in lane_ids:
             state.assignments[uid][int(lid)] = pr
 
+    # the above operation modifies assignments, rsync info in lanes
     rebuild_lanes_from_assignments(state)
 
     # keep existing lane mock validation for now
@@ -462,8 +464,17 @@ def remove_project_from_lane(state: RunState, lane_id: int, project_id: str) -> 
     for uid in to_del:
         del state.assignments[uid]
 
+    # the above operation modifies assignments, rsync info in lanes
     rebuild_lanes_from_assignments(state)
+
     lane_local_validate(state, lane_id)
+
+    # clean related messages in Messages panel
+    state.messages = [
+        m for m in state.messages
+        if not (m.lane == lane_id and m.project_id == project_id)
+    ]
+
     save_plan(state)
 
 
@@ -482,8 +493,17 @@ def clear_lane(state: RunState, lane_id: int) -> None:
     for uid in to_del:
         del state.assignments[uid]
 
+    # the above operation modifies assignments, rsync info in lanes
     rebuild_lanes_from_assignments(state)
+
     lane_local_validate(state, lane_id)
+
+    # clear messages in Messages panel
+    state.messages = [
+        m for m in state.messages
+        if m.lane != lane_id
+    ]
+
     save_plan(state)
 
 
@@ -641,24 +661,41 @@ PROBLEM_LEVEL_TO_LANE_STATUS = {
     "INFO": LaneStatus.OK, 
 }
 
-class PlanIntegrityError(RuntimeError):
-    """Raised when lanes reference projects/samples removed from state.projects."""
-    pass
 
-
-def _iter_plan_samples(state: RunState):
+def _iter_plan_samples(state: RunState, *, strict: bool):
     """
-    Yield (lane_id, project_id, sample_id, Sample|None).
-    lanes -> assignments are already synced (assumed true).
+    Yield tuples:
+        (lane_id, project_id, sequencing_type, sample_id, Sample | None)
     """
     for lane_id, lane in state.lanes.items():
         for uid in lane.sample_uids:
             pid, sid = split_sample_uid(uid)
-            proj = state.projects.get(pid)
-            sample = None
-            if proj is not None:
-                sample = next((s for s in proj.samples if s.sample_id == sid), None)
-            yield lane_id, pid, sid, sample
+
+            # retrieve project
+            project = state.projects.get(pid)
+            if project is None:
+                if strict:
+                    raise PlanIntegrityError(
+                        f"Export failed: project '{pid}' not found but still referenced in lanes"
+                    )
+                yield lane_id, pid, "", sid, None
+                continue
+
+            # retrieve sample
+            sample = next(
+                (s for s in project.samples if s.sample_id == sid), 
+                None, 
+            )
+            if sample is None:
+                if strict:
+                    raise PlanIntegrityError(
+                        f"Export failed: sample '{sid}' not found in project '{pid}'"
+                    )
+                yield lane_id, pid, project.sequencing_type, sid, None
+                continue
+
+            yield lane_id, pid, project.sequencing_type, sid, sample
+
 
 
 def ensure_plan_integrity_or_raise(state: RunState) -> None:
@@ -669,7 +706,7 @@ def ensure_plan_integrity_or_raise(state: RunState) -> None:
     missing_projects = set()
     missing_samples = []  # list of (lane_id, pid, sid)
 
-    for lane_id, pid, sid, sample in _iter_plan_samples(state):
+    for lane_id, pid, _, sid, sample in _iter_plan_samples(state, strict=False):
         if pid not in state.projects:
             missing_projects.add(pid)
             missing_samples.append((lane_id, pid, sid))
@@ -703,7 +740,7 @@ def build_samplesheet_df_from_lanes(state: RunState) -> pd.DataFrame:
     ensure_plan_integrity_or_raise(state)
 
     rows = []
-    for lane_id, pid, sid, sample in _iter_plan_samples(state):
+    for lane_id, pid, _, sid, sample in _iter_plan_samples(state, strict=False):
         # after integrity check, sample should exist
         assert sample is not None
 
@@ -825,7 +862,10 @@ def validate_current_plan(state: RunState) -> ValidationResult:
     except PlanIntegrityError as e:
         # write message + cache failed result
         push_message(state, "error", str(e), source="validation")
-        res = ValidationResult(errors=[str(e)], warnings=[])
+        res = ValidationResult(
+            problems=[Problem(level="ERROR", message=str(e), lane=None, sample_id=None)],
+            lane_barcode_mismatches={}, 
+        )
         state.validation_result = res
         save_plan(state)
         return res
@@ -899,12 +939,81 @@ def export_samplesheet(state: RunState) -> Path:
 # -------------------------
 
 def has_any_data(state: RunState) -> bool:
-    if not state.projects:
-        return False
     return any(len(l.sample_uids) > 0 for l in state.lanes.values())
 
 def can_export(state: RunState) -> bool:
     if not has_any_data(state):
         return False
     return all(l.status != LaneStatus.ERROR for l in state.lanes.values())
+
+
+def build_samplesheet_rows(state: RunState) -> list[SampleSheetRow]:
+    # initialize rows list
+    rows: list[SampleSheetRow] = []
+
+    for lane_id, pid, sequencing_type, sid, sample in _iter_plan_samples(state, strict=True):
+        rows.append(
+            SampleSheetRow(
+                lane=lane_id, 
+                project_id=pid, 
+                sample_id=sid, 
+                i7_id=sample.i7_id, 
+                i7_seq=sample.i7_seq, 
+                i5_id=sample.i5_id, 
+                i5_seq=sample.i5_seq, 
+                sequencing_type=sequencing_type, 
+            )
+        )
+
+    rows.sort(
+        key=lambda r: (
+            r.lane, 
+            r.project_id, 
+            r.sequencing_type, 
+            r.sample_id, 
+        )
+    )
+
+    return rows
+
+
+def export_samplesheets(
+    *,
+    state: RunState,
+    output_dir: Path,
+    prefix: str,
+    format: str,
+) -> list[Path]:
+    # build samplesheet rows
+    rows = build_samplesheet_rows(state)
+
+    # prepare output folder
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_paths: list[Path] = []
+
+    if format == "basespace":
+        renderer = BaseSpaceRenderer()
+
+        groups: dict[str, list[SampleSheetRow]] = defaultdict(list)
+        for r in rows:
+            # for safty, for sample/project without sequencing_type, assign them to 'unknown' group
+            groups[r.sequencing_type or "unknown"].append(r)
+
+        for i, (_seq, group_rows) in enumerate(groups.items(), start=1):
+            content = renderer.render(group_rows)
+            out = output_dir / f"{prefix}_basespace_{i}.csv"
+            out.write_text(content)
+            out_paths.append(out)
+
+    elif format == "iem":
+        renderer = IEMRenderer()
+        content = renderer.render(rows)
+        out = output_dir / f"{prefix}_iem.csv"
+        out.write_text(content)
+        out_paths.append(out)
+
+    else:
+        raise ValueError(f"Unknown format: {format}")
+
+    return out_paths
 
