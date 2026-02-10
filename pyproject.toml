@@ -16,6 +16,7 @@ authors = [
 dependencies = [
   "pandas>=1.5,<3.0",
   "openpyxl>=3.1,<4.0"
+  "nicegui>=3.4,<4.0"
 ]
 
 [project.scripts]
