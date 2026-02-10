@@ -33,3 +33,6 @@ LANE_RANGE = set(str(i) for i in range(1, 9))
 
 # reads capacity per lane
 DEFAULT_LANE_CAPACITY_M = 1250  # NovaSeq X Plus 10B / 8 lanes
+
+# max number of saved plans to keep
+MAX_SAVED_PLANS = 25
