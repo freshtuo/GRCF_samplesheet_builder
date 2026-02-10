@@ -216,6 +216,7 @@ def import_project(
     project_id: str,
     index_type: str,
     library_type: Optional[str],
+    sequencing_type: Optional[str], 
     file_path: Path,
     default_required_reads_m: Optional[int],
 ) -> Project:
@@ -229,6 +230,7 @@ def import_project(
         project_id=project_id,
         index_type=index_type,
         library_type=library_type,
+        sequencing_type=sequencing_type, 
         file_path=file_path,
         default_required_reads_m=default_required_reads_m,
     )
@@ -602,9 +604,26 @@ def build_project_summary_rows(state: RunState, project_filter: str = "All"):
 
     rows = []
     for pid in sorted(proj_samples.keys()):
+        # get project 
+        proj_obj = state.projects.get(pid)
+        # get library type 
+        library_type = (
+            proj_obj.library_type 
+            if proj_obj and proj_obj.library_type
+            else ""
+        )
+        # get sequencing type
+        sequencing_type = (
+            proj_obj.sequencing_type 
+            if proj_obj and proj_obj.sequencing_type
+            else ""
+        )
+        # add to table rows
         rows.append({
             "key": pid,
             "project": pid,
+            "library_type": library_type, 
+            "sequencing_type": sequencing_type, 
             "n_samples": len(proj_samples[pid]),
             "total_allocated_reads": proj_reads[pid],
             "lanes": ",".join(str(x) for x in sorted(proj_lanes[pid])),

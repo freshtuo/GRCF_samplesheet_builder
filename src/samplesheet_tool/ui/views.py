@@ -81,6 +81,8 @@ ASSIGNMENT_DETAIL_COLUMNS = [
 
 PROJECT_SUMMARY_COLUMNS = [
     {"name": "project", "label": "Project", "field": "project", "sortable": True},
+    {"name": "library_type", "label": "Library type", "field": "library_type", "sortable": True}, 
+    {"name": "sequencing_type", "label": "Sequencing type", "field": "sequencing_type", "sortable": True}, 
     {
         "name": "n_samples",
         "label": "# Samples",
@@ -156,8 +158,13 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
         ).classes("w-full")
 
         library_type = ui.input(
-            "library type",
+            "Library type",
             placeholder = "e.g. RNA-seq, scRNA-seq, Amplicon-seq", 
+        ).classes("w-full")
+
+        sequencing_type = ui.input(
+            "Sequencing type", 
+            placeholder = "e.g. PE50+8+8"
         ).classes("w-full")
 
         default_reads = ui.number(
@@ -233,6 +240,10 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
                 )
                 return
 
+            if not sequencing_type.value:
+                ui.notify("Sequencing type is required", type="negative")
+                return
+
             if not uploaded["path"]:
                 ui.notify("Please upload a project file", type="negative")
                 return
@@ -246,6 +257,7 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
                     project_id = pid,
                     index_type = index_type.value, 
                     library_type = (library_type.value or "").strip() or None,
+                    sequencing_type = (sequencing_type.value or "").strip() or None, 
                     file_path = tmp_path, 
                     default_required_reads_m = int(default_reads.value) if default_reads.value is not None else None, 
                 )
@@ -712,6 +724,8 @@ def build_project_panel(state: RunState, refresh_all) -> None:
             meta.append(p.index_type)
         if p.library_type:
             meta.append(p.library_type)
+        if p.sequencing_type:
+            meta.append(p.sequencing_type)
         suffix = " | ".join(meta)
         return f"{pid} [{suffix}]" if suffix else pid
 

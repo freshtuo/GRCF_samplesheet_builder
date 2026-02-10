@@ -122,6 +122,7 @@ def import_project_from_file(
     project_id: str,
     index_type: Literal["single", "dual"],
     library_type: Optional[str],
+    sequencing_type: Optional[str], 
     file_path: Path,
     default_required_reads_m: Optional[int],
 ) -> Project:
@@ -234,5 +235,6 @@ def import_project_from_file(
         samples=samples,
         library_type=library_type,
         index_type=index_type,
+        sequencing_type=sequencing_type, 
     )
 

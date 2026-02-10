@@ -89,6 +89,7 @@ class Project:
     samples: List[Sample] = field(default_factory=list)
     library_type: Optional[str] = None
     index_type: Literal["single", "dual"] = "dual"
+    sequencing_type: str = ""
 
     @property
     def n_samples(self) -> int:
@@ -199,6 +200,7 @@ class RunState:
                 samples=samples, 
                 library_type=pdata.get("library_type"), 
                 index_type=pdata.get("index_type", "dual"), 
+                sequencing_type=pdata.get("sequencing_type", ""), 
             )
 
         # lanes
