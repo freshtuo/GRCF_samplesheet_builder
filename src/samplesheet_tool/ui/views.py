@@ -119,7 +119,7 @@ def open_settings_dialog(state: RunState, refresh_all):
 
         ui.separator()
 
-        ui.label("Flowcell")
+        ##ui.label("Flowcell")
         flowcell_select = ui.select(
             options=list(FLOWCELL_PRESETS.keys()),
             value=cfg.flowcell_type,
@@ -141,7 +141,7 @@ def open_settings_dialog(state: RunState, refresh_all):
 
         ui.separator()
 
-        ui.label("Storage")
+        ##ui.label("Storage")
 
         # base dir: display only
         base_input = ui.input("Base Folder", value=str(state.base_dir)).classes("w-full").props("readonly")
@@ -160,13 +160,13 @@ def open_settings_dialog(state: RunState, refresh_all):
 
         ui.separator()
 
-        ui.label("Read Length")
+        ##ui.label("Read Length")
         r1_input = ui.number("Read1 Length", value=cfg.read1_len)
         r2_input = ui.number("Read2 Length", value=cfg.read2_len)
 
         ui.separator()
 
-        ui.label("Plan")
+        ##ui.label("Plan")
         max_plans_input = ui.number("Max saved plans", value=cfg.max_plans)
 
         with ui.row().classes("justify-end w-full"):
@@ -189,7 +189,6 @@ def open_settings_dialog(state: RunState, refresh_all):
                     flowcell_type=state.flowcell_type,
                     n_lanes=state.n_lanes,
                     lane_capacity_m=state.lane_capacity_m,
-                    base_dir=str(base_input.value), 
                     output_dir=str(output_input.value) if output_input.value else None, 
                     read1_len=state.read1_len,
                     read2_len=state.read2_len,
