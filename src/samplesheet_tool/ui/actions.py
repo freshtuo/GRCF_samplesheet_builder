@@ -29,7 +29,7 @@ from samplesheet_tool.ui.state import (
 from samplesheet_tool.ui.project_io import import_project_from_file
 
 from samplesheet_tool.config import (
-    COL_LANE, COL_SAMPLE_ID, COL_PROJECT_ID, COL_I7_ID, COL_I5_ID, COL_I7, COL_I5, DEFAULT_LANE_CAPACITY_M
+    COL_LANE, COL_SAMPLE_ID, COL_PROJECT_ID, COL_I7_ID, COL_I5_ID, COL_I7, COL_I5
 )
 
 from samplesheet_tool.io_normalize import check_required_columns, normalize_minimal
@@ -393,14 +393,15 @@ def lane_local_validate(state: RunState, lane_id: int) -> None:
         state.assignments.get(uid, {}).get(lane_id, 0)
         for uid in lane.sample_uids
     )
-    if used > DEFAULT_LANE_CAPACITY_M:
+    cap = int(state.lane_capacity_m)
+    if used > cap:
         lane.status = LaneStatus.ERROR
-        lane.headline = f"Reads overflow ({used} > {DEFAULT_LANE_CAPACITY_M} M)"
+        lane.headline = f"Reads overflow ({used} > {cap} M)"
 
         push_message(
             state, 
             "error",
-            f"Lane {lane_id} exceeds capacity: {used} > {DEFAULT_LANE_CAPACITY_M} M",
+            f"Lane {lane_id} exceeds capacity: {used} > {cap} M",
             source="lane_validation",
             lane=lane_id,
         )
@@ -870,7 +871,7 @@ def validate_current_plan(state: RunState) -> ValidationResult:
         save_plan(state)
         return res
 
-    tmp = default_store_dir() / "_tmp_samplesheet_for_validation.csv"
+    tmp = state.temp_dir / "_tmp_samplesheet_for_validation.csv"
     df.to_csv(tmp, index=False)
 
     res = cli_validate_samplesheet_file(tmp)

@@ -12,7 +12,6 @@ from datetime import datetime, date
 from collections import defaultdict
 
 from samplesheet_tool.utils import Problem
-from samplesheet_tool.config import MAX_SAVED_PLANS
 
 
 SAMPLE_UID_SEP = "::"
@@ -27,6 +26,14 @@ class PlanIntegrityError(RuntimeError):
     pass
 
 MessageLevel = Literal["error", "warning"]
+
+
+def default_store_dir() -> Path:
+    # internal tool: under user home directory, can be changed other directories later
+    base = Path.home() / ".samplesheet_tool_ui"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
 
 @dataclass
 class Message:
@@ -274,7 +281,7 @@ class RunState:
     projects: Dict[str, Project] = field(default_factory=dict)
     selected_project_id: Optional[str] = None
 
-    # Lane panel
+    # Lane panel (over-written in __post_init_)
     lanes: Dict[int, Lane] = field(default_factory=lambda: {i: Lane(i) for i in range(1, 9)})
 
     # Assignment table
@@ -288,6 +295,53 @@ class RunState:
     samples_rows_per_page: int = 50 # number of samples to show in table
     # store selected sample_uids (UI selection)
     selected_sample_uids: List[str] = field(default_factory=list)
+
+    # ---------- runtime environment (UI-first) ----------
+    flowcell_type: str = "10B"
+    n_lanes: int = 8
+    lane_capacity_m: int = 1250
+    read1_len: int = 101
+    read2_len: int = 101
+
+    base_dir: Path = field(default_factory=default_store_dir)
+    plan_dir: Path = field(init=False)
+    temp_dir: Path = field(init=False)
+    output_dir: Path = field(init=False)
+    max_plans: int = 25
+
+    def __post_init__(self):
+        # resolve directories under base_dir
+        self.plan_dir = self.base_dir / "plans"
+        self.temp_dir = self.base_dir / "temp"
+        self.output_dir = self.base_dir / "outputs"
+
+        self.plan_dir.mkdir(parents=True, exist_ok=True)
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # ensure lanes dict matches n_lanes
+        self.lanes = {i: Lane(i) for i in range(1, int(self.n_lanes) + 1)}
+
+    def apply_runtime_config(self, cfg) -> None:
+        """
+        Apply runtime config (flowcell, lanes, capacity, read length)
+        """
+        self.flowcell_type = cfg.flowcell_type
+        self.n_lanes = int(cfg.n_lanes)
+        self.lane_capacity_m = int(cfg.lane_capacity_m)
+
+        if cfg.output_dir:
+            self.output_dir = Path(cfg.output_dir)
+        else:
+            self.output_dir = self.base_dir / "outputs"
+
+        self.read1_len = int(cfg.read1_len)
+        self.read2_len = int(cfg.read2_len)
+
+        self.max_plans = int(cfg.max_plans)
+
+        # rebuild lanes cleanly
+        self.lanes = {i: Lane(i) for i in range(1, int(self.n_lanes) + 1)}
 
     # ---------- persistence ----------
     def to_dict(self) -> dict:
@@ -304,6 +358,14 @@ class RunState:
             "assignments": {
                 uid: {str(lid): int(v) for lid, v in per_lane.items()} for uid, per_lane in (self.assignments or {}).items()
             },
+            # save runtime info as part of plan (needed when recovering a plan)
+            "runtime": {
+                "flowcell_type": self.flowcell_type,
+                "n_lanes": self.n_lanes,
+                "lane_capacity_m": self.lane_capacity_m,
+                "read1_len": self.read1_len,
+                "read2_len": self.read2_len
+            }
             # no serializaion on validation_result
         }
 
@@ -382,23 +444,38 @@ class RunState:
         rs.samples_rows_per_page = int(d.get("samples_rows_per_page", 50))
         rs.selected_sample_uids = list(d.get("selected_sample_uids", []))
 
+        # runtime info
+        runtime = d.get("runtime")
+        if runtime:
+            self.apply_runtime_config(runtime)
+
         # validation_result (no serializaion)
         rs.validation_result = None
         
         return rs
 
+    def reset_run(self):
+        """
+        Reset current run state when flowcell / lane structure changes.
+        This clears all planning-related data.
+        """
+        # clear assignments only
+        self.assignments.clear()
 
-def default_store_dir() -> Path:
-    # internal tool: under user home directory, can be changed other directories later
-    #base = Path.home() / ".samplesheet_tool_ui"
-    base = Path("/gc11-data/analysis/taz2008/.samplesheet_tool_ui")
-    #base = Path("/Users/freshtuo/Work/.samplesheet_tool_ui")
-    base.mkdir(parents=True, exist_ok=True)
-    return base
+        # clear validation / messages
+        self.messages.clear()
+        self.validation_result = None
+        self.has_run_level_error = False
+
+        # clear selection
+        self.selected_sample_uids.clear()
+
+        # rebuild lanes according to new lane count
+        self.lanes = {i: Lane(i) for i in range(1, self.n_lanes + 1)}
 
 
 def save_plan(state: RunState, path: Optional[Path] = None) -> Path:
-    store = default_store_dir()
+    store = state.plan_dir
 
     if path is None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -406,8 +483,8 @@ def save_plan(state: RunState, path: Optional[Path] = None) -> Path:
     path.write_text(json.dumps(state.to_dict(), indent=2), encoding="utf-8")
 
     # clean up old plans
-    cleanup_saved_plans(store)
-    
+    cleanup_saved_plans(store, state.max_plans)
+
     return path
 
 
@@ -416,7 +493,7 @@ def load_plan(path: Path) -> RunState:
     return RunState.from_dict(d)
 
 
-def cleanup_saved_plans(store_dir: Path) -> None:
+def cleanup_saved_plans(store_dir: Path, keep_n: int) -> None:
     """
     Keep only the newest MAX_SAVED_PLANS plan files in store_dir.
     """
@@ -429,7 +506,7 @@ def cleanup_saved_plans(store_dir: Path) -> None:
         reverse=True, 
     )
 
-    for p in plans[MAX_SAVED_PLANS:]:
+    for p in plans[keep_n:]:
         try:
             p.unlink()
         except Exception:
@@ -440,13 +517,13 @@ def cleanup_saved_plans(store_dir: Path) -> None:
 # index preset persistence
 # -------------------------
 
-def index_preset_path() -> Path:
+def index_preset_path(state: RunState) -> Path:
     # get JSON file storing index preset
-    return default_store_dir() / "index_preset.json"
+    return state.base_dir / "index_preset.json"
 
 def save_index_preset(state: RunState) -> None:
     """Persist merged index tables (dual + single)."""
-    path = index_preset_path()
+    path = index_preset_path(state)
     payload = {
         "dual": state.index_tables.dual,
         "single": state.index_tables.single,
@@ -455,7 +532,7 @@ def save_index_preset(state: RunState) -> None:
 
 def load_index_preset(state: RunState) -> None:
     """Load merged index tables if preset exists."""
-    path = index_preset_path()
+    path = index_preset_path(state)
     if not path.exists():
         return
 

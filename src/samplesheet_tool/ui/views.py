@@ -9,13 +9,15 @@ from nicegui import ui
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
+from tkinter import Tk, filedialog
+
 from samplesheet_tool.ui.state import (
     RunState, LaneStatus, PlanIntegrityError, Message, 
     save_plan, load_plan, default_store_dir, 
     make_sample_uid, split_sample_uid, 
 )
 from samplesheet_tool.ui import actions
-from samplesheet_tool.config import DEFAULT_LANE_CAPACITY_M
+from samplesheet_tool.ui.runtime_config import RuntimeConfig, save_runtime_config, FLOWCELL_PRESETS
 
 # -------------------------
 # small helpers
@@ -100,6 +102,110 @@ PROJECT_SUMMARY_COLUMNS = [
     {"name": "lanes", "label": "Lanes", "field": "lanes"},
 ]
 
+
+def open_settings_dialog(state: RunState, refresh_all):
+    """create a pop-up dialog for changing settings"""
+    cfg = RuntimeConfig(
+        flowcell_type=state.flowcell_type, 
+        n_lanes=state.n_lanes,
+        lane_capacity_m=state.lane_capacity_m,
+        read1_len=state.read1_len,
+        read2_len=state.read2_len,
+        max_plans=state.max_plans,
+    )
+
+    with ui.dialog() as dialog, ui.card().classes("w-[500px]"):
+        ui.label("Runtime Settings").classes("text-lg font-bold")
+
+        ui.separator()
+
+        ui.label("Flowcell")
+        flowcell_select = ui.select(
+            options=list(FLOWCELL_PRESETS.keys()),
+            value=cfg.flowcell_type,
+            label="Flowcell Type",
+        ).classes("w-30")
+        lanes_input = ui.number("Number of Lanes", value=cfg.n_lanes)
+        capacity_input = ui.number("Reads per Lane (M)", value=cfg.lane_capacity_m)
+
+        # update n_lanes, lane_capacity_m based on selected flowcell
+        def on_flowcell_change(e):
+            preset = FLOWCELL_PRESETS.get(flowcell_select.value)
+            if not preset:
+                return
+
+            lanes_input.value = preset["n_lanes"]
+            capacity_input.value = preset["lane_capacity_m"]
+
+        flowcell_select.on_value_change(on_flowcell_change)
+
+        ui.separator()
+
+        ui.label("Storage")
+
+        # base dir: display only
+        base_input = ui.input("Base Folder", value=str(state.base_dir)).classes("w-full").props("readonly")
+
+        output_input = ui.input("Output Folder", value=str(state.output_dir)).classes("w-full")
+
+        def choose_output_folder():
+            root = Tk()
+            root.withdraw()
+            folder = filedialog.askdirectory()
+            root.destroy()
+            if folder:
+                output_input.value = folder
+
+        ui.button("Choose Output Folder", on_click=choose_output_folder)
+
+        ui.separator()
+
+        ui.label("Read Length")
+        r1_input = ui.number("Read1 Length", value=cfg.read1_len)
+        r2_input = ui.number("Read2 Length", value=cfg.read2_len)
+
+        ui.separator()
+
+        ui.label("Plan")
+        max_plans_input = ui.number("Max saved plans", value=cfg.max_plans)
+
+        with ui.row().classes("justify-end w-full"):
+            ui.button("Cancel", on_click=dialog.close)
+
+            def on_save():
+                # update state
+                state.flowcell_type = flowcell_select.value
+                state.n_lanes = int(lanes_input.value)
+                state.lane_capacity_m = int(capacity_input.value)
+                state.read1_len = int(r1_input.value)
+                state.read2_len = int(r2_input.value)
+                state.max_plans = int(max_plans_input.value)
+
+                # clear current run
+                state.reset_run()
+
+                # save config
+                new_cfg = RuntimeConfig(
+                    flowcell_type=state.flowcell_type,
+                    n_lanes=state.n_lanes,
+                    lane_capacity_m=state.lane_capacity_m,
+                    base_dir=str(base_input.value), 
+                    output_dir=str(output_input.value) if output_input.value else None, 
+                    read1_len=state.read1_len,
+                    read2_len=state.read2_len,
+                    max_plans=state.max_plans,
+                )
+                save_runtime_config(state.base_dir, new_cfg)
+
+                # refresh UI
+                refresh_all()
+
+                dialog.close()
+
+            ui.button("Save", on_click=on_save)
+
+        dialog.open()
+
 def build_toolbar(state: RunState, refresh_all) -> None:
     """creates a full-width horizontal toolbar for global actions."""
     # A full-width row with vertically centered items and 8px (gap-2) spacing
@@ -118,6 +224,7 @@ def build_toolbar(state: RunState, refresh_all) -> None:
         ui.separator().props("vertical")
 
         # Standard action buttons
+        ui.button("⚙ Settings", on_click=lambda: open_settings_dialog(state, refresh_all))
         ui.button("Import Project", on_click=lambda: import_project_dialog(state, refresh_all))
         ui.button("Open Plan", on_click=lambda: open_plan_dialog(state, refresh_all))
         ui.button("Save Plan", on_click=lambda: do_save_plan(state))
@@ -196,7 +303,7 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
             content = await e.file.read()
 
             filename = Path(e.file.name).name
-            tmp_path = default_store_dir() / f"_upload_{filename}"
+            tmp_path = state.temp_dir / f"_upload_{filename}"
 
             tmp_path.write_bytes(content)
 
@@ -288,7 +395,7 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
 def open_plan_dialog(state: RunState, refresh_all) -> None:
     """creates a modal dialog that allows users to select and load a previously saved configuration file."""
     # Get the default storage directory
-    store = default_store_dir()
+    store = state.plan_dir
     # Find up to 30 recent plan JSON files
     plans = sorted(store.glob("plan_*.json"), reverse=True)
     options = [str(p) for p in plans[:30]]
@@ -481,7 +588,7 @@ def do_export(state: RunState) -> None:
 
         out_dir = ui.input(
             "Output directory", 
-            value=str(default_store_dir()), 
+            value=str(state.output_dir), 
         ).classes("w-full")
 
         prefix = ui.input(
@@ -963,7 +1070,7 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
     # Control row for adding samples to lane(s)
     with ui.row().classes("items-center gap-2"):
         lane_sel = ui.select(
-            options=[str(i) for i in range(1, 9)],
+            options=[str(i) for i in range(1, state.n_lanes + 1)],
             label="Add to lane(s)",
             multiple=True,
         ).classes("w-64")
@@ -1017,7 +1124,7 @@ def build_lane_panel(state: RunState, refresh_all) -> None:
     ui.label("Lanes").classes("text-base font-semibold")
 
     # Dense layout: fixed left column for status dot
-    for lid in range(1, 9):
+    for lid in range(1, state.n_lanes + 1):
         lane = state.lanes[lid]
 
         def make_on_remove_project(lid: int):
@@ -1037,7 +1144,7 @@ def build_lane_panel(state: RunState, refresh_all) -> None:
 
         with ui.card().classes("w-full mb-2"):
             used = lane_used_reads_m(state, lid)
-            capacity = DEFAULT_LANE_CAPACITY_M
+            capacity = state.lane_capacity_m
             pct = used / capacity if capacity > 0 else 0
 
             # ---------- Line 1: status + lane + reads + progress ----------
@@ -1140,7 +1247,7 @@ def build_messages_panel(state: RunState, refresh_all) -> None:
         # Controls
         with ui.row().classes("w-full items-center gap-2"):
             search = ui.input("Search", placeholder="text contains...").classes("w-full")
-            lane_opts = ["(any)"] + [str(i) for i in range(1, 9)]
+            lane_opts = ["(any)"] + [str(i) for i in range(1, state.n_lanes + 1)]
             lane_sel = ui.select(options=lane_opts, value="(any)", label="Lane").classes("w-28")
 
             proj_opts = ["(any)"] + sorted(state.projects.keys())
