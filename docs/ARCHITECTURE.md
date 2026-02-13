@@ -146,9 +146,7 @@ Status indicator:
 | Status | Meaning |
 |--------|---------|
 |🟢  Green | Valid |
-|-----------------|
 |🟡 Yelloww | Warning|
-|-------------------|
 |🔴 Red	| Blocking error |
 ```
 Lane-local validation is lane-specific only.
