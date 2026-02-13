@@ -12,7 +12,6 @@ from samplesheet_tool.config import (
     COL_LANE, COL_SAMPLE_ID, COL_PROJECT_ID, 
     COL_I7, COL_I5, COL_I7_ID, COL_I5_ID,
     REQUIRED_CANONICAL_COLS, 
-    LANE_RANGE
 )
 
 from samplesheet_tool.utils import normalize_seq

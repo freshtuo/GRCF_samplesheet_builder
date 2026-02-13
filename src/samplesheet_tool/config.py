@@ -27,12 +27,3 @@ COL_BARCODE_MISMATCHES = "barcode_mismatches"
 
 # required columns
 REQUIRED_CANONICAL_COLS = {COL_LANE, COL_SAMPLE_ID, COL_PROJECT_ID, COL_I7, COL_I5, COL_I7_ID, COL_I5_ID}
-
-# lane range
-LANE_RANGE = set(str(i) for i in range(1, 9))
-
-# reads capacity per lane
-DEFAULT_LANE_CAPACITY_M = 1250  # NovaSeq X Plus 10B / 8 lanes
-
-# max number of saved plans to keep
-MAX_SAVED_PLANS = 25
