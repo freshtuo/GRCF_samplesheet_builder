@@ -32,49 +32,69 @@ The system ensures:
 
 ## 🖥 UI Panels
 
-The interface consists of several main panels:
+The application UI consists of:
 
-### 1️⃣ Settings Panel
+### A. Persistent Panels
 
-Configure runtime parameters:
+These are always visible in the main interface:
 
-- Flowcell type (1.5B / 10B / 25B)
+#### 1️⃣ Index Panel
 
-- Number of lanes
+  - Import index tables
+  - Manage index presets
+  - Auto-fill missing index values
 
-- Lane capacity
+#### 2️⃣ Project Panel
+  - Import project metadata
+  - View project list
+  - Remove projects
 
-- Read 1 / Read 2 length
+#### 3️⃣ Sample Panel
+  - Displays sample-level details for selected project
+  - Review index and allocation information
 
-- Output directory
+#### 4️⃣ Lane Panel
+  - Assign projects to lanes
+  - View lane capacity usage
+  - See lane validation status indicators
 
-Changing flowcell settings clears lane assignments (new run planning assumed).
+#### 5️⃣ Messages Panel
+  - Displays warnings and errors
+  - Displays validation results
+  - Displays system messages
 
-### 2️⃣ Project Panel
+All validation feedback is pushed here.
 
-- Import project metadata (CSV)
+### B. Dialog-Based Views
 
-- View project-level summary
+These are modal dialogs triggered by user actions.
 
-- Remove projects (does not automatically remove from lanes)
+#### Settings Dialog
 
-### 3️⃣ Lane Panel
+Used to configure runtime parameters.
 
-- Assign projects to lanes
+#### Summary Dialog
 
-- View per-lane read allocation
+Provides multi-level allocation summaries:
+  - Run-level
+  - Project-level
+  - Sample-level
 
-- See lane-level validation status (green/yellow/red)
+#### Plan Management Dialog
 
-### 4️⃣ Validation Panel
+Load or manage saved plans.
 
-Two-level validation:
+### C. Validation Mechanism (Background System)
 
-- Lane-local validation (per lane)
+Validation is not a UI panel.
 
-- Final global validation (cross-lane checks)
+It is a background logic system that:
+  - Runs lane-local checks
+  - Runs global final validation
+  - Updates lane status indicators
+  - Pushes messages to Messages Panel
 
-Export is blocked if validation fails.
+Validation does not open a separate window.
 
 ## 🚀 Basic Workflow
 
@@ -96,11 +116,12 @@ Export is blocked if validation fails.
 
 Each saved plan stores:
 
+- Runtime snapshot
+- Projects
+- Samples
 - Lane assignments
-
-- Project layout
-
-- Runtime snapshot (flowcell, lanes, read lengths)
+- Validation state (if applicable)
+- Index references (as needed)
 
 Loading a plan restores its runtime environment automatically.
 
