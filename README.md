@@ -134,7 +134,7 @@ Requirements
 
 ### Clone Repository
 ```bash
-git clone https://github.com/your-organization/samplesheet-tool.git
+git clone https://github.com/freshtuo/samplesheet-tool.git
 cd samplesheet-tool
 ```
 ### Create Virtual Environment (Recommended)
@@ -150,7 +150,7 @@ source venv/bin/activate
 ```
 ### Install
 ```bash
-pip install -e .
+pip install .
 ```
 ## ▶ Run the Application
 ```bash
@@ -176,7 +176,7 @@ outputs/
 
 Exports are written to:
 ```markdown
-outputs/run_YYYYMMDD_HHMMSS/
+outputs/
 ```
 ## 🐞 Reporting Issues
 
@@ -204,9 +204,7 @@ Please report issues via:
 
 ## 📘 Documentation
 
-- Developer Architecture → docs/ARCHITECTURE.md
-
-- Detailed Usage Manual → docs/MANUAL.md (if created)
+- Detailed Usage Manual can be found [here](docs/ARCHITECTURE.md)
 
 ## 🔖 Versioning
 
