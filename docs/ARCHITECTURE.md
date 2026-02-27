@@ -201,10 +201,10 @@ Lane status resolution rules:
 | Lane-local Status | Final Validation Result | Final Lane Status | Notes |
 |---|---|---|---|
 | OK | OK | 🟢  Green | Fully valid |
-| OK | WARNING | 🟡 Yelloww | Final validation adds risk |
+| OK | WARNING | 🟡  Yellow | Final validation adds risk |
 | OK | ERROR | 🔴 Red | Final validation escalates |
-| WARNING | OK | 🟡 Yelloww | Lane-local warning persists |
-| WARNING | WARNING | 🟡 Yelloww | Same severity |
+| WARNING | OK | 🟡  Yellow | Lane-local warning persists |
+| WARNING | WARNING | 🟡  Yellow | Same severity |
 | WARNING | ERROR | 🔴 Red | Escalated by final validation |
 | ERROR | any | 🔴 Red | Lane-local hard error is never downgraded |
 
