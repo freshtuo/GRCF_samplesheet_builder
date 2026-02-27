@@ -200,7 +200,7 @@ Lane status resolution rules:
 
 | Lane-local Status | Final Validation Result | Final Lane Status | Notes |
 |---|---|---|---|
-| OK | OK | 🟢  GGreen | Fully valid |
+| OK | OK | 🟢  Green | Fully valid |
 | OK | WARNING | 🟡 Yelloww | Final validation adds risk |
 | OK | ERROR | 🔴 Red | Final validation escalates |
 | WARNING | OK | 🟡 Yelloww | Lane-local warning persists |
