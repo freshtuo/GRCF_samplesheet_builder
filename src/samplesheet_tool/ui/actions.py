@@ -597,7 +597,7 @@ def build_assignment_detail_rows(state: RunState, project_filter: str = "All"):
                 "project": pid,
                 "sample": sid,
                 "lane": lane_id,
-                "planned_reads": int(reads),
+                "allocated_reads": int(reads),
             })
 
     return rows

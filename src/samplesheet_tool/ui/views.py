@@ -73,9 +73,9 @@ ASSIGNMENT_DETAIL_COLUMNS = [
     {"name": "sample", "label": "Sample", "field": "sample", "sortable": True},
     {"name": "lane", "label": "Lane", "field": "lane", "align": "right"},
     {
-        "name": "planned_reads",
-        "label": "Planned reads (M)",
-        "field": "planned_reads",
+        "name": "allocated_reads",
+        "label": "Allocated reads (M)",
+        "field": "allocated_reads",
         "align": "right",
         "sortable": True, 
     },
