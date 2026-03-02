@@ -6,7 +6,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Dict, List, Optional, Literal, Tuple, Any
+
 import json
+import csv
+import io
+
 from pathlib import Path
 from datetime import datetime, date
 from collections import defaultdict
@@ -155,10 +159,25 @@ class BaseRenderer:
 
 class BaseSpaceRenderer(BaseRenderer):
     def render(self, rows: list[SampleSheetRow]) -> str:
-        lines = [
-            "Lane,Sample_ID,Index,Index2,BarcodeMismatchesIndex1,BarcodeMismatchesIndex2,Sample_Project,Description"
-        ]
+        buf = io.StringIO()
+        writer = csv.writer(
+            buf, 
+            lineterminator="\n",
+            quoting=csv.QUOTE_MINIMAL, # automatically add quote to strings containing comma
+        )
 
+        # header
+        writer.writerow([
+            "Lane",
+            "Sample_ID",
+            "Index",
+            "Index2",
+            "BarcodeMismatchesIndex1",
+            "BarcodeMismatchesIndex2",
+            "Sample_Project",
+            "Description",
+        ])
+        
         merged = defaultdict(lambda: {
             "lanes": set(), 
             "row": None, 
@@ -186,20 +205,18 @@ class BaseSpaceRenderer(BaseRenderer):
             r = item["row"]
             lane_str = ",".join(str(l) for l in sorted(item["lanes"]))
 
-            lines.append(
-                ",".join([
-                    lane_str, 
-                    r.sample_id,
-                    r.i7_seq,
-                    r.i5_seq or "", # in case single-index, no i5 index
-                    '1',            # for now, set mismatches to 1 since we still use BaseSpace sequencing planner
-                    '1',            # for now, set mismatches to 1 since we still use BaseSpace sequencing planner
-                    r.project_id,
-                    r.sequencing_type
-                ])
-            )
+            writer.writerow([
+                lane_str, 
+                r.sample_id,
+                r.i7_seq,
+                r.i5_seq or "", # in case single-index, no i5 index
+                '1',            # for now, set mismatches to 1 since we still use BaseSpace sequencing planner
+                '1',            # for now, set mismatches to 1 since we still use BaseSpace sequencing planner
+                r.project_id,
+                r.sequencing_type, 
+            ])
 
-        return "\n".join(lines) + "\n"
+        return buf.getvalue()
 
 
 class IEMRenderer(BaseRenderer):
@@ -447,7 +464,7 @@ class RunState:
         # runtime info
         runtime = d.get("runtime")
         if runtime:
-            self.apply_runtime_config(runtime)
+            rs.apply_runtime_config(runtime)
 
         # validation_result (no serializaion)
         rs.validation_result = None
