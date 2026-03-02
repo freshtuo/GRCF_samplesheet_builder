@@ -16,6 +16,7 @@ from datetime import datetime, date
 from collections import defaultdict
 
 from samplesheet_tool.utils import Problem
+from samplesheet_tool.ui.runtime_config import default_config
 
 
 SAMPLE_UID_SEP = "::"
@@ -462,9 +463,13 @@ class RunState:
         rs.selected_sample_uids = list(d.get("selected_sample_uids", []))
 
         # runtime info
-        runtime = d.get("runtime")
+        runtime = d.get("runtime") or {}
         if runtime:
-            rs.apply_runtime_config(runtime)
+            cfg = default_config()
+            for k, v in runtime.items():
+                if hasattr(cfg, k):
+                    setattr(cfg, k, v)
+            rs.apply_runtime_config(cfg)
 
         # validation_result (no serializaion)
         rs.validation_result = None

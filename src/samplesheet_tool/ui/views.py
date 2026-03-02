@@ -30,6 +30,26 @@ def status_dot(status: LaneStatus) -> str:
         LaneStatus.ERROR: "🔴",
     }[status]
 
+def panel_btn(btn: ui.button) -> ui.button:
+    """
+    Unified button style for white panels (Indexes/Projects/Samples/Lanes/Messages).
+    No strong colors, no red borders, no heavy contrast.
+    """
+    # base: light fill + thin border + subtle shadow
+    btn.props("no-caps flat color=none")
+    btn.classes(
+        "font-medium "
+        "bg-gray-100 hover:bg-gray-200 "
+        "text-gray-800 "
+        "px-3 py-1.5 rounded-md "
+        "border border-gray-300 hover:border-gray-400 "
+        "shadow-sm hover:shadow-md "
+        "hover:ring-1 hover:ring-gray-300 "
+        "focus:outline-none focus:ring-2 focus:ring-gray-400 "
+        "transition-all duration-150"
+    )
+
+    return btn
 
 # -------------------------
 # lane reads helpers
@@ -156,7 +176,7 @@ def open_settings_dialog(state: RunState, refresh_all):
             if folder:
                 output_input.value = folder
 
-        ui.button("Choose Output Folder", on_click=choose_output_folder)
+        panel_btn(ui.button("Choose Output Folder", on_click=choose_output_folder))
 
         ui.separator()
 
@@ -208,7 +228,7 @@ def open_settings_dialog(state: RunState, refresh_all):
 def build_toolbar(state: RunState, refresh_all) -> None:
     """creates a full-width horizontal toolbar for global actions."""
     # A full-width row with vertically centered items and 8px (gap-2) spacing
-    with ui.row().classes("w-full items-center gap-2"):
+    with ui.row().classes("w-full items-center gap-2 bg-primary text-white px-3 py-2"):
         ui.label("GRCF SampleSheet Tool").classes("text-lg font-semibold")
 
         if state.has_run_level_error:
@@ -222,16 +242,29 @@ def build_toolbar(state: RunState, refresh_all) -> None:
 
         ui.separator().props("vertical")
 
-        # Standard action buttons
-        ui.button("⚙ Settings", on_click=lambda: open_settings_dialog(state, refresh_all))
-        ui.button("Import Project", on_click=lambda: import_project_dialog(state, refresh_all))
-        ui.button("Open Plan", on_click=lambda: open_plan_dialog(state, refresh_all))
-        ui.button("Save Plan", on_click=lambda: do_save_plan(state))
-        ui.button("Validate", on_click=lambda: do_validate(state, refresh_all))
-        ui.button("Summary", on_click=lambda: open_summary_dialog(state))
+        # ---- toolbar button style: visible on dark background ----
+        def tb(btn: ui.button):
+            btn.props("no-caps unelevated")
+            btn.classes(
+                "text-white font-medium "
+                "bg-white/10 hover:bg-white/18 "
+                "border border-white/20 "
+                "px-3 py-1.5 "
+                "rounded-md "
+                "shadow-sm "
+                "transition-colors"
+            )
+            return btn
+
+        tb(ui.button("⚙ Settings", on_click=lambda: open_settings_dialog(state, refresh_all)))
+        tb(ui.button("Import Project", on_click=lambda: import_project_dialog(state, refresh_all)))
+        tb(ui.button("Open Plan", on_click=lambda: open_plan_dialog(state, refresh_all)))
+        tb(ui.button("Save Plan", on_click=lambda: do_save_plan(state)))
+        tb(ui.button("Validate", on_click=lambda: do_validate(state, refresh_all)))
+        tb(ui.button("Summary", on_click=lambda: open_summary_dialog(state)))
 
         # Export button pushed to the far right using Tailwind's 'ml-auto'
-        export_btn = ui.button("Export SampleSheet", on_click=lambda: do_export(state))
+        export_btn = tb(ui.button("Export SampleSheet", on_click=lambda: do_export(state)))
         export_btn.classes("ml-auto")
 
         # Logic to toggle button availability based on state
@@ -859,10 +892,11 @@ def build_indexes_panel(state: RunState, refresh_all) -> None:
 
             mapping_sel.on_value_change(_on_mapping_change)
 
-            ui.button(
-                "Load mapping table…",
-                on_click=lambda: import_mapping_dialog(state, refresh_all),
-            ).props("outline").classes("w-full")
+            ui.separator()
+
+            panel_btn(
+                ui.button("Load mapping table…", on_click=lambda: import_mapping_dialog(state, refresh_all)),
+            ).classes("w-full")
 
             ui.label(f"dual: {stats['dual_ids']} IDs | single: {stats['single_ids']} IDs") \
               .classes("text-xs text-gray-500")
@@ -921,10 +955,9 @@ def build_project_panel(state: RunState, refresh_all) -> None:
         if p.total_required_reads_m is not None:
             ui.label(f"Total reads(M): {p.total_required_reads_m}").classes("text-xs text-gray-600")
 
-        ui.button(
-            "Remove", 
-            on_click=lambda: _confirm_remove_project(state, refresh_all),
-        ).props("outline dense").classes("ml-auto")
+        panel_btn(
+            ui.button("Remove", on_click=lambda: _confirm_remove_project(state, refresh_all)), 
+        ).classes("ml-auto")
 
     ## debug
     ##ui.label(f"DEBUG pid={state.selected_project_id} projects={list(state.projects.keys())}").classes("text-xs text-gray-500")
@@ -1064,7 +1097,7 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
         select_all_cb = ui.checkbox(f"Select all samples in project ({len(rows)})", value=False)
         select_all_cb.on_value_change(lambda e: _select_all(e.value))
 
-        ui.button("Clear selection", on_click=lambda: _select_all(False)).props("flat")
+        panel_btn(ui.button("Clear selection", on_click=lambda: _select_all(False)))
 
     # Control row for adding samples to lane(s)
     with ui.row().classes("items-center gap-2"):
@@ -1111,7 +1144,7 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
 
             refresh_all()
 
-        ui.button("Add selected", on_click=do_add)
+        panel_btn(ui.button("Add selected", on_click=do_add))
 
 
 # -------------------------
@@ -1173,10 +1206,7 @@ def build_lane_panel(state: RunState, refresh_all) -> None:
                     f"projects: {len(lane.project_ids)}   samples: {len(lane.sample_uids)}"
                 ).classes("text-sm text-gray-600 leading-tight")
 
-                ui.button(
-                    "Clear lane",
-                    on_click=_on_clear_lane
-                ).props("outline").classes("ml-auto")
+                panel_btn(ui.button("Clear lane", on_click=_on_clear_lane)).classes("ml-auto")
 
             # ---------- Actions ----------
             with ui.row().classes("items-center gap-2 mt-1"):
@@ -1192,10 +1222,9 @@ def build_lane_panel(state: RunState, refresh_all) -> None:
                 rm_sel.on_value_change(lambda e, _buf=rm_selected: _buf.__setitem__("pid", e.value))
 
                 # freeze handler + buffer for this lane
-                ui.button(
-                    "Remove",
-                    on_click=lambda _h=_on_remove_project, _buf=rm_selected: _h(_buf["pid"]),
-                ).props("outline")
+                panel_btn(
+                    ui.button("Remove", on_click=lambda _h=_on_remove_project, _buf=rm_selected: _h(_buf["pid"])), 
+                )
 
 
 def _rm_project(state: RunState, lane_id: int, project_id: str | None, refresh_all) -> None:
@@ -1252,7 +1281,7 @@ def build_messages_panel(state: RunState, refresh_all) -> None:
             proj_opts = ["(any)"] + sorted(state.projects.keys())
             proj_sel = ui.select(options=proj_opts, value="(any)", label="Project").classes("w-40")
 
-            ui.button("Clear index import msgs", on_click=lambda: _clear_source("index_import")).props("flat")
+            panel_btn(ui.button("Clear index import msgs", on_click=lambda: _clear_source("index_import")))
 
         def _clear_source(src: str):
             actions.clear_messages(state, source=src)
@@ -1337,6 +1366,19 @@ def build_main_view(state: RunState) -> None:
     Root coordinator for application's layout.
     Three-column layout + toolbar. Rebuild on refresh.
     """
+    ui.colors(
+        primary="#2C3E50",
+        secondary="#34495E",
+        accent="#16A085",
+        positive="#2E8B57",
+        negative="#E74C3C",
+        warning="#B7791F",
+    )
+    ui.add_head_html("""
+        <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+        </style>
+    """)
     # Create a persistent outer container
     container = ui.column().classes("w-full h-screen overflow-hidden")
 
@@ -1363,7 +1405,7 @@ def build_main_view(state: RunState) -> None:
                             build_project_panel(state, refresh_all)
                     # Messages: take remaining height (this is the key)
                     with ui.element("div").classes("w-full flex-1 overflow-hidden"):
-                            build_messages_panel(state, refresh_all)
+                        build_messages_panel(state, refresh_all)
 
                 # Center column: Samples Table (x/y scroll)
                 with ui.column().classes("w-2/4 h-full overflow-hidden"):
