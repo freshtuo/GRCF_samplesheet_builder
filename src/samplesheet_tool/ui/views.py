@@ -18,6 +18,7 @@ from samplesheet_tool.ui.state import (
 )
 from samplesheet_tool.ui import actions
 from samplesheet_tool.ui.runtime_config import RuntimeConfig, save_runtime_config, FLOWCELL_PRESETS
+from samplesheet_tool.ui import __version__
 
 # -------------------------
 # small helpers
@@ -231,6 +232,8 @@ def build_toolbar(state: RunState, refresh_all) -> None:
     with ui.row().classes("w-full items-center gap-2 bg-primary text-white px-3 py-2"):
         ui.label("GRCF SampleSheet Tool").classes("text-lg font-semibold")
 
+        ui.badge(f"v{__version__}").props("outline").classes("text-white border-white/40 ml-2")
+        
         if state.has_run_level_error:
             ui.badge(
                 "Run-level error",
