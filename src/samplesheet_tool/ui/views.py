@@ -31,10 +31,11 @@ def status_dot(status: LaneStatus) -> str:
         LaneStatus.ERROR: "🔴",
     }[status]
 
-def panel_btn(btn: ui.button) -> ui.button:
+def panel_btn(btn: Any) -> Any:
     """
     Unified button style for white panels (Indexes/Projects/Samples/Lanes/Messages).
     No strong colors, no red borders, no heavy contrast.
+    ** input and output object should be ui.button ** 
     """
     # base: light fill + thin border + subtle shadow
     btn.props("no-caps flat color=none")
@@ -191,7 +192,7 @@ def open_settings_dialog(state: RunState, refresh_all):
         max_plans_input = ui.number("Max saved plans", value=cfg.max_plans)
 
         with ui.row().classes("justify-end w-full"):
-            ui.button("Cancel", on_click=dialog.close)
+            panel_btn(ui.button("Cancel", on_click=dialog.close))
 
             def on_save():
                 # update state
@@ -202,6 +203,21 @@ def open_settings_dialog(state: RunState, refresh_all):
                 state.read2_len = int(r2_input.value)
                 state.max_plans = int(max_plans_input.value)
 
+                # apply output dir to state
+                raw = (output_input.value or "").strip()
+                try:
+                    if raw:
+                        p = Path(raw)
+                        p.mkdir(parents=True, exist_ok=True)
+                        state.output_dir = p
+                    else:
+                        state.output_dir = state.base_dir / "outputs"
+                        state.output_dir.mkdir(parents=True, exist_ok=True)
+                except Exception as e:
+                    ui.notify(f"Invalid output folder: {e}. Use default outputs/", type="warning")
+                    state.output_dir = state.base_dir / "outputs"
+                    state.output_dir.mkdir(parents=True, exist_ok=True)
+
                 # clear current run
                 state.reset_run()
 
@@ -210,7 +226,7 @@ def open_settings_dialog(state: RunState, refresh_all):
                     flowcell_type=state.flowcell_type,
                     n_lanes=state.n_lanes,
                     lane_capacity_m=state.lane_capacity_m,
-                    output_dir=str(output_input.value) if output_input.value else None, 
+                    output_dir=str(state.output_dir), 
                     read1_len=state.read1_len,
                     read2_len=state.read2_len,
                     max_plans=state.max_plans,
@@ -222,7 +238,7 @@ def open_settings_dialog(state: RunState, refresh_all):
 
                 dialog.close()
 
-            ui.button("Save", on_click=on_save)
+            panel_btn(ui.button("Save", on_click=on_save))
 
         dialog.open()
 
@@ -361,8 +377,8 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
         # action buttons
         # -------------------------
         with ui.row().classes("justify-end gap-2 mt-4"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button("Import", on_click=lambda: _do_import()).props("unelevated")
+            panel_btn(ui.button("Cancel", on_click=dialog.close))
+            panel_btn(ui.button("Import", on_click=lambda: _do_import()))
 
         # -------------------------
         # import action
@@ -441,7 +457,7 @@ def open_plan_dialog(state: RunState, refresh_all) -> None:
         # Handle the case where no plans exist
         if not options:
             ui.label(f"No plans found in {store}")
-            ui.button("Close", on_click=dialog.close)
+            panel_btn(ui.button("Close", on_click=dialog.close))
             dialog.open()
             return
 
@@ -450,8 +466,8 @@ def open_plan_dialog(state: RunState, refresh_all) -> None:
 
         # Action buttons aligned to the right
         with ui.row().classes("justify-end gap-2"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button("Open", on_click=lambda: _do()).props("unelevated")
+            panel_btn(ui.button("Cancel", on_click=dialog.close))
+            panel_btn(ui.button("Open", on_click=lambda: _do()))
 
         def _do():
             # Validation
@@ -463,10 +479,19 @@ def open_plan_dialog(state: RunState, refresh_all) -> None:
             new_state = load_plan(Path(sel.value))
 
             # Update the current state with the new data
-            state.index_tables = new_state.index_tables
             state.indexes_panel_collapsed = new_state.indexes_panel_collapsed
             state.indexes_mapping_type = new_state.indexes_mapping_type
             state.messages = new_state.messages
+
+            # sync runtime settings
+            state.flowcell_type = new_state.flowcell_type
+            state.n_lanes = new_state.n_lanes
+            state.lane_capacity_m = new_state.lane_capacity_m
+            state.read1_len = new_state.read1_len
+            state.read2_len = new_state.read2_len
+            state.output_dir = new_state.output_dir
+            state.max_plans = new_state.max_plans
+
             state.projects = new_state.projects
             state.selected_project_id = new_state.selected_project_id
             state.lanes = new_state.lanes
@@ -503,10 +528,7 @@ def open_summary_dialog(state: RunState) -> None:
             # ---------- Header ----------
             with ui.row().classes("w-full items-center"):
                 ui.label("Summary").classes("text-lg font-semibold")
-                ui.button(
-                    "Close",
-                    on_click=dialog.close,
-                ).props("flat").classes("ml-auto")
+                panel_btn(ui.button("Close", on_click=dialog.close).classes("ml-auto"))
 
             ui.separator()
 
@@ -642,17 +664,19 @@ def do_export(state: RunState) -> None:
         )
 
         with ui.row().classes("justify-end gap-2 mt-4"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button(
-                "Export",
-                on_click=lambda: _do_export_confirm(
-                    state, 
-                    out_dir.value, 
-                    prefix.value, 
-                    fmt.value, 
-                    dialog, 
-                ),
-            ).props("unelevated")
+            panel_btn(ui.button("Cancel", on_click=dialog.close))
+            panel_btn(
+                ui.button(
+                    "Export",
+                    on_click=lambda: _do_export_confirm(
+                        state, 
+                        out_dir.value, 
+                        prefix.value, 
+                        fmt.value, 
+                        dialog, 
+                    )
+                )
+            )
 
     dialog.open()
 
@@ -786,8 +810,8 @@ def import_mapping_dialog(state: RunState, refresh_all) -> None:
         ui.separator()
 
         with ui.row().classes("justify-end gap-2"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button("Load", on_click=lambda: _do()).props("unelevated")
+            panel_btn(ui.button("Cancel", on_click=dialog.close))
+            panel_btn(ui.button("Load", on_click=lambda: _do()))
 
         def _do():
             if not file_buf["text"]:
@@ -977,11 +1001,8 @@ def _confirm_remove_project(state: RunState, refresh_all):
         ui.label("This will remove the project from the Projects Panel.").classes("text-sm")
 
         with ui.row().classes("justify-end gap-2"):
-            ui.button("Cancel", on_click=dlg.close).props("flat")
-            ui.button(
-                "Remove",
-                on_click=lambda: _do_remove_project(state, pid, dlg, refresh_all),
-            ).props("unelevated")
+            panel_btn(ui.button("Cancel", on_click=dlg.close))
+            panel_btn(ui.button("Remove", on_click=lambda: _do_remove_project(state, pid, dlg, refresh_all)))
 
     dlg.open()
 

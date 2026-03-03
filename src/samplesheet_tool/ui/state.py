@@ -361,10 +361,28 @@ class RunState:
         # rebuild lanes cleanly
         self.lanes = {i: Lane(i) for i in range(1, int(self.n_lanes) + 1)}
 
+    def rebuild_lanes_from_assignments(self) -> None:
+        """
+        rebuild lane.sample_uids/project_ids from assignments (gold truth)
+        similar to the same-name function in actions.py
+        """
+        for lane in self.lanes.values():
+            lane.sample_uids = []
+            lane.project_ids = []
+        for uid, per_lane in self.assignments.items():
+            pid, _sid = split_sample_uid(uid)
+            for lid in per_lane.keys():
+                lane = self.lanes.get(int(lid))
+                if not lane:
+                    continue
+                if uid not in lane.sample_uids:
+                    lane.sample_uids.append(uid)
+                if pid and pid not in lane.project_ids:
+                    lane.project_ids.append(pid)
+
     # ---------- persistence ----------
     def to_dict(self) -> dict:
         return {
-            "index_tables": asdict(self.index_tables), 
             "indexes_panel_collapsed": self.indexes_panel_collapsed,
             "indexes_mapping_type": self.indexes_mapping_type,
             "messages": [asdict(m) for m in self.messages], 
@@ -391,17 +409,21 @@ class RunState:
     def from_dict(d: dict) -> "RunState":
         rs = RunState()
 
-        # index tables + indexes panel state
-        it = d.get("index_tables") or {}
-        rs.index_tables = IndexTables(
-            dual = it.get("dual") or {},
-            single = it.get("single") or {}, 
-        )
+        # indexes panel state
         rs.indexes_panel_collapsed = bool(d.get("indexes_panel_collapsed", True))
         rs.indexes_mapping_type = d.get("indexes_mapping_type", "dual")
 
         # messages
         rs.messages = [Message(**m) for m in (d.get("messages") or [])]
+
+        # runtime info
+        runtime = d.get("runtime") or {}
+        if runtime:
+            cfg = default_config()
+            for k, v in runtime.items():
+                if hasattr(cfg, k):
+                    setattr(cfg, k, v)
+            rs.apply_runtime_config(cfg)
         
         # projects
         rs.selected_project_id = d.get("selected_project_id")
@@ -431,8 +453,8 @@ class RunState:
             )
             rs.lanes[lid] = lane
 
-        # ensure 1-8 exist
-        for i in range(1, 9):
+        # ensure lanes exist
+        for i in range(1, int(rs.n_lanes) + 1):
             rs.lanes.setdefault(i, Lane(i))
 
         # assignments
@@ -444,32 +466,11 @@ class RunState:
         # if assignments exist, rebuild lane.sample_uids/project_ids from assignments (gold truth)
         # to avoid future bugs that may be introduced by e.g. update assignments while forgot to update lanes
         if rs.assignments:
-            for lane in rs.lanes.values():
-                lane.sample_uids = []
-                lane.project_ids = []
-            for uid, per_lane in rs.assignments.items():
-                pid, _sid = split_sample_uid(uid)
-                for lid in per_lane.keys():
-                    lane = rs.lanes.get(int(lid))
-                    if not lane:
-                        continue
-                    if uid not in lane.sample_uids:
-                        lane.sample_uids.append(uid)
-                    if pid and pid not in lane.project_ids:
-                        lane.project_ids.append(pid)
+            rs.rebuild_lanes_from_assignments()
 
         # samples panel: rows per page
         rs.samples_rows_per_page = int(d.get("samples_rows_per_page", 50))
         rs.selected_sample_uids = list(d.get("selected_sample_uids", []))
-
-        # runtime info
-        runtime = d.get("runtime") or {}
-        if runtime:
-            cfg = default_config()
-            for k, v in runtime.items():
-                if hasattr(cfg, k):
-                    setattr(cfg, k, v)
-            rs.apply_runtime_config(cfg)
 
         # validation_result (no serializaion)
         rs.validation_result = None
