@@ -134,8 +134,8 @@ Requirements
 
 ### Clone Repository
 ```bash
-git clone https://github.com/freshtuo/samplesheet-tool.git
-cd samplesheet-tool
+git clone https://github.com/freshtuo/GRCF_samplesheet_builder.git
+cd GRCF_samplesheet_builder
 ```
 ### Create Virtual Environment (Recommended)
 #### Windows:
