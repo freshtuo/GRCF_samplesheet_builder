@@ -68,8 +68,8 @@ index_id → i7 sequence + i5 sequence
 
 File must contain:
 - index_id
-- i7
-- i5
+- i7 sequence
+- i5 sequence
 
 This is typical for dual-index kits.
 
@@ -94,7 +94,257 @@ This is used when:
 This “single vs dual mapping” refers to index table structure —
 it is NOT the same as sequencing type.
 
+### 📁 3.2 Projects Panel
 
+Used to:
+- Import project sample files (CSV/TSV)
+- Select active project
+- Remove project from panel
 
+When importing a project you define:
+- Project ID
+- Index type (dual/single)
+- Library type
+- Sequencing type
+- Default required reads per sample
 
+Project removal:
+- Removes it from the panel
+- Does NOT automatically modify lane assignments
+
+### 🧪 3.3 Samples Panel
+
+Displays samples of the selected project.
+
+Columns depend on project index type:
+
+Dual-index project:
+- sample_id
+- i7_index_id
+- i7_index_seq
+- i5_index_id
+- i5_index_seq
+- required_reads_m (optional)
+
+Single-index project:
+- sample_id
+- i7_index_id
+- i7_index_seq
+- required_reads_m (optional)
+
+You can:
+- Select multiple samples
+- Add selected samples to one or more lanes
+- Specify planned reads per sample per lane
+
+### 🛣 3.4 Lane Panel
+Displays lane planning summary.
+
+Each lane shows:
+- Status dot
+- Used reads / Capacity
+- Progress bar
+- # projects
+- # samples
+
+Lane Status Colors
+
+| Status | Meaning |
+|---|---|
+| 🟢 Green  | Valid |
+| 🟠 Orange  | Warning |
+| 🔴 Red | Error |
+
+Errors block export.
+
+You can:
+- Remove specific project from lane, this will remove all samples related to this project
+- Clear entire lane
+
+### 📢 3.5 Messages Panel
+Centralized validation and system messages.
+
+Shows:
+- Validation errors
+- Warnings
+
+Supports:
+- Search filter
+- Lane filter
+- Project filter
+- Clear index import messages
+
+All validation results appear here.
+
+## 4️⃣ Dialog-Based Views (Modal)
+
+These are not panels — they open as pop-up dialogs.
+
+### ⚙ 4.1 Settings Dialog
+
+Used to configure runtime:
+- Flowcell type (1.5B / 10B / 25B)
+- Number of lanes
+- Reads per lane capacity
+- Read1 length
+- Read2 length
+- Output directory
+- Max saved plans
+
+Changing settings:
+- Clears lane assignments
+- Keeps imported projects
+
+Settings are saved to:
+```text
+~/.samplesheet_tool/config.json
+```
+
+### 📊 4.2 Summary Dialog
+Provides three summary levels:
+
+#### 1️⃣ Sample Summary (Most Important)
+
+Shows per-sample allocation:
+
+```text
+| Project | Sample | Required | Allocated | Remaining | Status |
+```
+
+Status colors:
+
+| Status | Meaning |
+|---|---|
+| ✓ OK | Exactly allocated |
+| ▲ Under | Under-allocated |
+| ● Over | Over-allocated |
+
+This is the primary planning feedback table.
+
+#### 2️⃣ Assignment Detail
+
+Shows:
+
+```text
+Project → Sample → Lane → Allocated reads
+```
+
+Used for debugging distribution.
+
+#### 3️⃣ Project Summary
+
+Shows:
+```text
+Project → #Samples → Total allocated → Lanes used
+```
+
+High-level overview.
+
+### 📂 4.3 Plan Management
+
+Plans store:
+- Runtime snapshot
+- Projects
+- Samples
+- Lane assignments
+- Messages
+
+Loading a plan restores:
+- Flowcell
+- Lane count
+- Capacity
+- Read lengths
+
+This guarantees reproducibility.
+
+Plans stored in:
+```text
+~/.samplesheet_tool/plans/
+```
+
+## 5️⃣ Validation Model
+
+Validation has two layers:
+
+### Lane-local Validation
+
+Triggered when:
+- Assigning samples
+- Removing assignments
+- Clearing lane
+
+Checks:
+- Lane capacity overflow
+- Duplicate indexes in lane
+- Duplicate samples in lane
+
+Updates:
+- Lane status dot
+- Messages panel
+
+### Final Global Validation
+
+Triggered when:
+- Clicking Validate
+- Before Export
+
+Checks:
+- Cross-lane conflicts
+- Run-level errors
+- Export format requirements
+
+Export is blocked if:
+- Any lane is 🔴 Red
+- Final validation produces error
+
+## 6️⃣ Export SampleSheet
+
+Export requires:
+- Valid plan
+- No lane-level errors
+- No global errors
+- Project metadata still present
+
+You choose:
+- Output directory
+- File prefix
+
+Format:
+- BaseSpace sequencing plan
+- IEM SampleSheet
+
+Files are written to:
+```text
+output_dir/prefix.**
+```
+
+## 7️⃣ Recommended Workflow
+
+1. Open Settings
+2. Import index table
+3. Import project(s)
+4. Assign samples to lanes
+5. Fix red lane errors
+6. Check Sample Summary
+7. Run Validate
+8. Export
+
+## 8️⃣ Directory Structure
+
+```text
+~/.samplesheet_tool/
+│
+├── config.json
+├── plans/
+├── temp/
+└── outputs/
+```
+
+## 9️⃣ Key Design Principles
+
+- Single source of truth: RunState
+- Deterministic validation
+- Runtime snapshot persistence
+- Structured exports
+- UI-first planning model
 
