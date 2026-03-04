@@ -144,8 +144,8 @@ Each lane shows:
 - Status dot
 - Used reads / Capacity
 - Progress bar
-- # projects
-- # samples
+- #projects
+- #samples
 
 Lane Status Colors
 
