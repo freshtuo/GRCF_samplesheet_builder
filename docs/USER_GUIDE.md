@@ -309,9 +309,16 @@ You choose:
 - Output directory
 - File prefix
 
-Format:
-- BaseSpace sequencing plan
+The tool supports exporting two different formats.
+- BaseSpace Sequence Plan
+    - Samples are grouped by sequencing type.
+    - Each sequencing type will generate one separate file.
+    - Each file represents one sequencing plan.
+
 - IEM SampleSheet
+    - A single file is generated.
+    - The file contains all samples from all lanes.
+    - Each row represents: Lane + Sample
 
 Files are written to:
 ```text
@@ -339,12 +346,4 @@ output_dir/prefix.**
 ├── temp/
 └── outputs/
 ```
-
-## 9️⃣ Key Design Principles
-
-- Single source of truth: RunState
-- Deterministic validation
-- Runtime snapshot persistence
-- Structured exports
-- UI-first planning model
 
