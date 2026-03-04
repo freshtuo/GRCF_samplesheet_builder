@@ -2,7 +2,7 @@
 
 This document describes how to use the SampleSheet Tool UI for sequencing lane planning and SampleSheet export.
 
-For installation instructions, see [README.md](README.md).
+For installation instructions, see [README.md](../README.md).
 
 ## 1️⃣ Application Overview
 
@@ -54,11 +54,11 @@ These are not dialogs — they are permanent parts of the layout.
 ### 🧩 3.1 Index Panel
 Used to manage index mapping tables.
 
-** Import Mapping Table **
+**Import Mapping Table**
 
 You can import index tables in two mapping modes:
 
-** 🔹 Dual Mapping Mode **
+**🔹 Dual Mapping Mode**
 
 Use when each index ID corresponds to:
 
@@ -73,7 +73,7 @@ File must contain:
 
 This is typical for dual-index kits.
 
-** 🔹 Single Mapping Mode **
+**🔹 Single Mapping Mode**
 
 Use when each index ID corresponds to:
 
