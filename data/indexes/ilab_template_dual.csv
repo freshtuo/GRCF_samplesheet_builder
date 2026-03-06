@@ -1,0 +1,11 @@
+Sample ID,Plate ID (Optional),Well ID (Optional),I7 Index ID (Optional),I7 Index Bases for Sample Sheet (forward orientation),I5 Index ID (Optional),I5 Index Bases for Sample Sheet (forward orientation)
+Sample_1,,,TGCCTCTT,AAGAGGCA,,CTATTAAG
+Sample_2,,,TGCCTCTT,AAGAGGCA,,AAGGAGTA
+Sample_3,,,AGGCTCCG,CGGAGCCT,,AAGGCTAT
+Sample_4,,,AGGCTCCG,CGGAGCCT,,TCGACTAG
+,,,,,,
+,,,,,,
+,,,,,,
+,,,,,,
+,,,,,,
+,,,,,,
