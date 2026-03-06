@@ -219,7 +219,8 @@ def import_project(
     library_type: Optional[str],
     sequencing_type: Optional[str], 
     file_path: Path,
-    default_required_reads_m: Optional[int],
+    default_required_reads_m: Optional[int], 
+    required_reads_mode: str = "per_sample", 
 ) -> Project:
     """
     Atomic project import:
@@ -233,7 +234,8 @@ def import_project(
         library_type=library_type,
         sequencing_type=sequencing_type, 
         file_path=file_path,
-        default_required_reads_m=default_required_reads_m,
+        default_required_reads_m=default_required_reads_m, 
+        required_reads_mode=required_reads_mode, 
     )
 
     state.projects[project_id] = proj

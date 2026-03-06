@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Optional, Literal
 from pathlib import Path
+import math
 import re
 import pandas as pd
 
@@ -26,9 +27,33 @@ def read_project_table(path: Path) -> pd.DataFrame:
         return pd.read_csv(path, comment="#")
     raise ValueError(f"Unsupported file type: {path.name}")
 
+# alias column names in project file
+_COLUMN_ALIASES = {
+    # sample ID
+    "Sample ID": "sample_id", 
+
+    # i7 id
+    "I7 Index ID (Optional)": "i7_index_id", 
+
+    # i7 seq
+    "I7 Index Bases for Sample Sheet (forward orientation)": "i7_index_seq", 
+
+    # i5 id
+    "I5 Index ID (Optional)": "i5_index_id", 
+
+    # i5 seq
+    "I5 Index Bases for Sample Sheet (forward orientation)": "i5_index_seq"
+}
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+
+    renamed = {}
+    for col in df.columns:
+        renamed[col] = _COLUMN_ALIASES.get(col, col)
+
+    df = df.rename(columns=renamed)
+
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
     return df
 
@@ -70,6 +95,34 @@ def check_required_reads(df: pd.DataFrame) -> None:
     if bad.any():
         rows = df.index[bad].tolist()[:5]
         raise ValueError(f"required_reads_m must be >= 0 (rows: {rows})")
+
+
+def resolve_default_required_reads_per_sample(
+    *, 
+    n_samples: int, 
+    required_reads_mode: Literal["per_sample", "per_project"], 
+    default_required_reads_m: Optional[int], 
+) -> Optional[int]:
+    """
+    Convert dialog input to per-sample required reads (M). 
+    Keep storage uniform for downstream logic.
+    """
+    if default_required_reads_m is None:
+        return None
+
+    value = int(default_required_reads_m)
+    if value <= 0:
+        raise ValueError("Default required reads must be > 0")
+
+    if required_reads_mode == "per_sample":
+        return value
+    elif required_reads_mode == "per_project":
+        if n_samples <= 0:
+            raise ValueError("Project file contains no samples")
+        # keep required_reads_m as int; round up so total target is not under-allocated
+        return int(math.ceil(value / n_samples))
+    else:
+        raise ValueError(f"Invalid required_reads_mode: {required_reads_mode}")
 
 
 # ============================================================
@@ -124,7 +177,8 @@ def import_project_from_file(
     library_type: Optional[str],
     sequencing_type: Optional[str], 
     file_path: Path,
-    default_required_reads_m: Optional[int],
+    default_required_reads_m: Optional[int], 
+    required_reads_mode: Literal["per_sample", "per_project"] = "per_sample", 
 ) -> Project:
 
     if index_type not in {"single", "dual"}:
@@ -135,6 +189,18 @@ def import_project_from_file(
     # ------------------------
     df_raw = read_project_table(file_path)
     df = normalize_columns(df_raw)
+
+    # ------------------------------------------------
+    # Drop completely empty rows (common in Excel/iLab exports)
+    # ------------------------------------------------
+    df = df.replace(r'^\s*$', pd.NA, regex=True)
+    df = df.dropna(how="all").reset_index(drop=True)
+
+    default_required_reads_per_sample_m = resolve_default_required_reads_per_sample(
+        n_samples=len(df), 
+        required_reads_mode=required_reads_mode, 
+        default_required_reads_m=default_required_reads_m, 
+    )
 
     # ------------------------
     # Schema enforcement
@@ -210,7 +276,7 @@ def import_project_from_file(
         if "required_reads_m" in df.columns and pd.notna(r["required_reads_m"]):
             req = int(r["required_reads_m"])
         else:
-            req = default_required_reads_m
+            req = default_required_reads_per_sample_m
 
         samples.append(
             Sample(

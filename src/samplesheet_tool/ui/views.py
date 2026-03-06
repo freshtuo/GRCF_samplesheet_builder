@@ -325,11 +325,42 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
             placeholder = "e.g. PE50+8+8"
         ).classes("w-full")
 
+        required_reads_mode = ui.select(
+            options={
+                "per_sample": "Per sample",
+                "per_project": "Per project", 
+            }, 
+            value="per_sample", 
+            label="Required reads mode", 
+        ).classes("w-full")
+
         default_reads = ui.number(
             "Default required reads per sample (M)",
             value=40,
             min=1,
         ).classes("w-full")
+
+        required_reads_hint = ui.label(
+            "Used only when the uploaded file does not provide required_reads_m."
+        ).classes("text-xs text-gray-500")
+
+        def _sync_required_reads_ui():
+            if required_reads_mode.value == "per_project":
+                default_reads.label = "Default required reads per project (M)"
+                required_reads_hint.text = (
+                    "If the uploaded file does not provide required_reads_m, "
+                    "the app will divide the project total by sample count "
+                    "and store the result per sample."
+                )
+            else:
+                default_reads.label = "Default required reads per sample (M)"
+                required_reads_hint.text = (
+                    "Used only when the uploaded file does not provide required_reads_m."
+                )
+            default_reads.update()
+
+        required_reads_mode.on_value_change(lambda _: _sync_required_reads_ui())
+        _sync_required_reads_ui()
 
         ui.separator()
 
@@ -406,6 +437,10 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
                 ui.notify("Please upload a project file", type="negative")
                 return
 
+            if default_reads.value is None or int(default_reads.value) <= 0:
+                ui.notify("Default required reads must be > 0", type="negative")
+                return
+
             # get temporary file
             tmp_path = Path(uploaded["path"])
 
@@ -418,6 +453,7 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
                     sequencing_type = (sequencing_type.value or "").strip() or None, 
                     file_path = tmp_path, 
                     default_required_reads_m = int(default_reads.value) if default_reads.value is not None else None, 
+                    required_reads_mode=required_reads_mode.value or "per_sample", 
                 )
             except Exception as e:
                 ui.notify(f"Import failed: {e}", type="negative")
