@@ -8,10 +8,11 @@ This document describes the internal architecture and design rules of the Sample
 ## 1. Goals
 
 - **Single source of truth**: UI and actions operate on `RunState` only.
+- **Simple collaboration**: 2-3 users can share indexes and projects through a shared folder without sharing live lane plans.
 - **Reproducibility**: Saved plans include a **runtime snapshot** (flowcell/lanes/read lengths/capacity).
 - **Deterministic validation**: Split validation into lane-local vs final global validation with clear
   responsibility boundaries and stable status resolution rules.
-- **Structured storage**: fixed base dir under user home, with `plans/`, `temp/`, `outputs/`.
+- **Structured storage**: shared catalog for shared metadata, local workspace for personal planning state.
 
 ## 2. Key Concepts
 
@@ -23,28 +24,30 @@ Runtime describes the planning environment. It includes:
 - `read1_len`, `read2_len`
 - `output_dir` (optional override)
 - `max_plans`
+- `shared_catalog_dir` (path to shared indexes/projects)
+- `user_name` (optional attribution for shared saves)
 
 Runtime defaults come from `config.json` and can be edited via **Settings dialog**.
 
 ### 2.2 Plan
 
-A Plan is a **complete snapshot** of a planned run:
+A Plan is a **local snapshot** of a planned run:
 
 - runtime snapshot (for reproducibility)
-- projects + samples (imported metadata)
 - lane assignments
-- relevant index table references (if needed for restoration)
+- selected project/sample UI state
 - optional validation snapshot (messages/status)
 
-**Rule**: `load_plan` restores runtime from the plan snapshot to prevent mismatches.
+Shared indexes and shared projects are **not** the authority in plan files. They are loaded from the shared catalog.
+
+**Rule**: `load_plan` restores runtime from the plan snapshot to prevent mismatches, then rebinds the UI to the current shared catalog.
 
 ### 2.3 RunState (Single Source of Truth)
 
 `RunState` represents the current in-memory state of the UI:
 
 - runtime fields
-- loaded index tables/presets
-- projects and samples
+- `catalog` for shared indexes and projects
 - lane assignments and lane status
 - messages
 
@@ -54,31 +57,43 @@ UI and actions should **only read/write `RunState`**.
 
 ## 3. Storage Model and Directory Layout
 
-### 3.1 Base Directory (Fixed)
-Base directory is fixed and cross-platform:
+### 3.1 Local Workspace
+Base directory is fixed and cross-platform for per-user data:
 
-- `Path.home() / ".samplesheet_tool"`
+- `Path.home() / ".samplesheet_tool_ui"`
 
-This avoids bootstrap problems and is stable on Windows/macOS/Linux.
+This stores each user's local planning state and avoids collisions between collaborators.
 
-### 3.2 On-disk Layout
+### 3.2 Local On-disk Layout
 
 ```markdown
-~/.samplesheet_tool/
+~/.samplesheet_tool_ui/
 │
-├── config.json        # runtime defaults (optional)
-├── index_preset.json  # saved index presets (optional)
-├── plans/             # saved plans (reproducible snapshots)
+├── config.json        # runtime defaults, shared path, user name
+├── plans/             # local planning snapshots
 ├── temp/              # transient intermediates (safe to delete)
 └── outputs/           # exports
 ```
 
-### 3.3 Persistence Responsibilities
+### 3.3 Shared Catalog Layout
 
-- `config.json`: runtime defaults (saved from Settings dialog)
-- `plans/*.json`: per-run snapshots (runtime + assignments + samples)
+```markdown
+<shared_catalog_dir>/
+│
+├── indexes.json
+└── projects/
+    ├── PROJECT_A.json
+    └── PROJECT_B.json
+```
+
+### 3.4 Persistence Responsibilities
+
+- local `config.json`: runtime defaults + shared folder path + user name
+- local `plans/*.json`: runtime + assignments + local UI state
 - `temp/`: upload/import scratch space; safe to clear
 - `outputs/`: final deliverables
+- shared `indexes.json`: shared index mappings
+- shared `projects/*.json`: one shared project per file
 
 ---
 
@@ -87,14 +102,14 @@ This avoids bootstrap problems and is stable on Windows/macOS/Linux.
 ### 4.1 Persistent Panels (always visible)
 
 - **Index Panel**: import/manage index tables; used to fill missing indexes during project import
-- **Project Panel**: import/remove projects (removal does not auto-remove lane assignments)
+- **Project Panel**: view/import/remove shared projects (removal does not auto-remove local lane assignments)
 - **Sample Panel**: shows samples for selected project; inspect indexes/reads/etc.
 - **Lane Panel**: assign/remove projects/samples to lanes; shows lane status indicator
 - **Messages Panel**: warnings/errors/info pushed by validation and actions
 
 ### 4.2 Dialog-Based Views (modal)
 
-- **Settings dialog**: edits runtime (flowcell, lanes, capacity, read lengths, output_dir)
+- **Settings dialog**: edits runtime (flowcell, lanes, capacity, read lengths, output_dir, shared_catalog_dir, user_name)
 - **Summary dialog**: aggregated view of current assignments (run/project/sample levels)
 
 ### 4.3 Validation Mechanism (not a panel)
@@ -112,7 +127,7 @@ Validation is a background logic system that:
 ### 5.1 Import
 
 ```markdown
-Index tables/presets
+Shared indexes
         ↓
 Project import (CSV)
 
@@ -120,11 +135,11 @@ Project import (CSV)
 
 - resolve index IDs → sequences (if possible)
 
-- fill missing indexes using index presets (optional)
+- fill missing indexes using shared index catalog (optional)
 
 - sample-level sanity checks
         ↓
-RunState.projects / RunState.samples
+Shared catalog projects
 ```
 
 ### 5.2 Planning (UI Interaction)
@@ -132,7 +147,9 @@ RunState.projects / RunState.samples
 ```markdown
 Define Runtime Settings
         ↓
-Assign Projects to Lanes
+Refresh shared catalog if needed
+        ↓
+Assign shared projects to local lanes
         ↓
 Lane-local Validation within each lane
         ↓
@@ -153,8 +170,8 @@ Else → export into state.output_dir
 
 ### 5.4 Plan Save/Load
 
-- Save plan: serialize runtime snapshot + projects/samples + lane assignments
-- Load plan: restore runtime snapshot first, rebuild lanes, then restore assignments, refresh UI
+- Save plan: serialize runtime snapshot + local assignments + local UI state
+- Load plan: restore runtime snapshot first, rebuild lanes, restore assignments, then use the current shared catalog
 
 Plans are automatically saved when things get changed.
 
@@ -228,9 +245,14 @@ System assumes a new run planning session:
 ### 7.2 Project Removal vs Lane Assignments
 
 Removing a project from Project Panel:
-- removes it from the project list
+- removes it from the shared catalog
 - **does not automatically remove already-assigned items from lanes**
 - lane content is only changed via Lane Panel actions
+
+If another user deleted the same project already:
+- refresh shared catalog
+- keep local lane assignments unchanged
+- report missing shared project during validation/export if still referenced
 
 ### 7.3 Load Plan Restores Runtime
 
@@ -247,6 +269,20 @@ Read lengths are runtime. If changed after assignments:
 
 ---
 
+### 7.5 Collaboration Model
+
+Collaboration is intentionally simple:
+- 2-3 users point the app to the same `shared_catalog_dir`
+- shared data: indexes and projects
+- local-only data: lane assignments, validation/messages, local plans, outputs
+- refresh is manual through the toolbar
+- duplicate project IDs are rejected
+- removing an already-deleted project becomes a refresh case, not a crash
+
+The app does **not** implement real-time sync or shared lane planning.
+
+---
+
 ## 8. Export Model
 
 ### Export Requires Project/Sample Metadata (Do Not Remove Before Export)
@@ -254,10 +290,10 @@ Read lengths are runtime. If changed after assignments:
 Exporting a SampleSheet requires **project/sample metadata** loaded from the Project/Sample panels.
 
 - The export renderer builds rows from the imported project + sample records.
-- If a project is removed from the Project Panel before export, its sample metadata may no longer be available,
-  which can lead to missing entries or incomplete output.
+- If a shared project is removed before export, local lane assignments may still reference it.
+  In that case validation/export should fail clearly until the user removes or fixes those assignments.
 
-**Practical rule:** ensure required projects/samples remain loaded until export is completed.
+**Practical rule:** ensure required shared projects still exist before export is completed.
 
 Export output location:
 - `state.output_dir`
@@ -322,4 +358,3 @@ GRCF_samplesheet_builder/
 
 - User guide / workflow: `README.md`
 - If you want a detailed usage guide: `docs/ARCHITECTURE.md` (optional)
-

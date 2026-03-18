@@ -16,14 +16,18 @@ from samplesheet_tool.ui.state import (
     RunState, 
     LaneStatus, PlanIntegrityError, 
     Project, 
-    Sample, 
     Message, MessageLevel, 
     ValidationResult, 
     IndexMappingType, 
     SampleSheetRow, BaseSpaceRenderer, IEMRenderer, 
-    save_plan, load_plan, default_store_dir, 
+    save_plan, default_store_dir, 
     make_sample_uid, split_sample_uid, 
-    save_index_preset
+)
+from samplesheet_tool.ui.shared_catalog import (
+    delete_shared_project,
+    load_shared_catalog,
+    save_shared_indexes,
+    save_shared_project,
 )
 
 from samplesheet_tool.ui.project_io import import_project_from_file
@@ -150,7 +154,7 @@ def import_mapping_table_from_text(
 
     # Validate conflicts BEFORE mutating state (atomic)
     if mapping_type == "dual":
-        existing = state.index_tables.dual
+        existing = state.catalog.index_tables.dual
         for index_id, rec in parsed:
             if index_id in existing and existing[index_id] != rec:
                 push_message(
@@ -159,9 +163,10 @@ def import_mapping_table_from_text(
                     f"Index import failed ({filename}): index_id '{index_id}' conflicts with existing mapping",
                     source="index_import",
                 )
+                ui.notify("Index import failed: conflicting index ID found. See Messages.", type="negative")
                 return False
     else:
-        existing = state.index_tables.single
+        existing = state.catalog.index_tables.single
         for index_id, rec in parsed:
             seq = rec["sequence"]
             if index_id in existing and existing[index_id] != seq:
@@ -171,6 +176,7 @@ def import_mapping_table_from_text(
                     f"Index import failed ({filename}): index_id '{index_id}' conflicts with existing mapping",
                     source="index_import",
                 )
+                ui.notify("Index import failed: conflicting index ID found. See Messages.", type="negative")
                 return False
 
     # Merge
@@ -178,18 +184,18 @@ def import_mapping_table_from_text(
     add_n = 0
     if mapping_type == "dual":
         for index_id, rec in parsed:
-            if index_id in state.index_tables.dual:
+            if index_id in state.catalog.index_tables.dual:
                 dup_n += 1
                 continue
-            state.index_tables.dual[index_id] = rec
+            state.catalog.index_tables.dual[index_id] = rec
             add_n += 1
     else:
         for index_id, rec in parsed:
             seq = rec["sequence"]
-            if index_id in state.index_tables.single:
+            if index_id in state.catalog.index_tables.single:
                 dup_n += 1
                 continue
-            state.index_tables.single[index_id] = seq
+            state.catalog.index_tables.single[index_id] = seq
             add_n += 1
 
     if dup_n:
@@ -200,8 +206,35 @@ def import_mapping_table_from_text(
             source="index_import",
         )
 
-    # persist merged index tables as preset
-    save_index_preset(state)
+    if state.shared_catalog_dir is None:
+        push_message(
+            state,
+            "warning",
+            "Shared catalog folder is not configured; indexes are available only in this session.",
+            source="index_import",
+        )
+        ui.notify(
+            "Shared catalog folder is not configured; indexes are available only in this session.",
+            type="warning",
+        )
+    else:
+        try:
+            save_shared_indexes(
+                state.shared_catalog_dir,
+                state.catalog.index_tables,
+                user_name=state.user_name or None,
+            )
+        except PermissionError:
+            push_message(
+                state,
+                "warning",
+                "No permission to write shared indexes; imported indexes are available only in this session.",
+                source="index_import",
+            )
+            ui.notify(
+                "No permission to write shared indexes; imported indexes are available only in this session.",
+                type="warning",
+            )
 
     ui.notify(f"Loaded mapping table: +{add_n} IDs ({mapping_type})", type="positive")
     return True
@@ -238,16 +271,36 @@ def import_project(
         required_reads_mode=required_reads_mode, 
     )
 
-    state.projects[project_id] = proj
+    if project_id in state.catalog.projects:
+        raise ValueError(
+            f"Project ID '{project_id}' already exists. Remove it first before importing again."
+        )
+    if state.shared_catalog_dir is None:
+        raise ValueError("Shared catalog folder is not configured.")
+
+    try:
+        save_shared_project(
+            state.shared_catalog_dir,
+            proj,
+            user_name=state.user_name or None,
+        )
+    except PermissionError as e:
+        raise PermissionError(
+            f"No permission to write project files in shared catalog: {e}"
+        ) from e
+    state.catalog.projects[project_id] = proj
     state.selected_project_id = project_id
+    state.ensure_valid_project_selection()
 
     save_plan(state)
     
     return proj
 
 def remove_project(state: RunState, project_id: str) -> None:
-    if project_id not in state.projects:
+    if project_id not in state.catalog.projects:
         return
+    if state.shared_catalog_dir is None:
+        raise ValueError("Shared catalog folder is not configured.")
 
     ## remove from lanes
     #for lane in state.lanes.values():
@@ -258,12 +311,48 @@ def remove_project(state: RunState, project_id: str) -> None:
     #        pid for pid in lane.project_ids if pid != project_id
     #    ]
 
-    del state.projects[project_id]
+    try:
+        deleted = delete_shared_project(state.shared_catalog_dir, project_id)
+    except PermissionError:
+        ui.notify(
+            f"No permission to remove project '{project_id}' from the shared catalog.",
+            type="negative",
+        )
+        return
+    if not deleted:
+        try:
+            state.catalog = load_shared_catalog(state.shared_catalog_dir)
+        except PermissionError:
+            ui.notify(
+                "Project was already removed, but the app has no permission to refresh the shared catalog.",
+                type="warning",
+            )
+            return
+        state.ensure_valid_project_selection()
+        ui.notify(
+            f"Project '{project_id}' was already removed from the shared catalog. Refreshed local view.",
+            type="warning",
+        )
+        save_plan(state)
+        return
 
-    if state.selected_project_id == project_id:
-        state.selected_project_id = next(iter(state.projects), None)
+    del state.catalog.projects[project_id]
+    state.ensure_valid_project_selection()
 
     save_plan(state)
+
+
+def refresh_shared_catalog(state: RunState) -> None:
+    """Reload shared indexes/projects while preserving local planning state."""
+    if state.shared_catalog_dir is None:
+        raise ValueError("Shared catalog folder is not configured.")
+    try:
+        state.catalog = load_shared_catalog(state.shared_catalog_dir)
+    except PermissionError as e:
+        raise PermissionError(
+            f"No permission to read the shared catalog folder: {e}"
+        ) from e
+    state.ensure_valid_project_selection()
 
 
 # -------------------------
@@ -353,7 +442,7 @@ def lane_local_validate(state: RunState, lane_id: int) -> None:
 
     for uid in lane.sample_uids:
         pid, sid = split_sample_uid(uid)
-        proj = state.projects.get(pid)
+        proj = state.catalog.projects.get(pid)
         if not proj:
             continue
 
@@ -547,7 +636,7 @@ def build_sample_summary_rows(state: RunState, project_filter: str = "All"):
             continue
 
         # lookup required_reads from project metadata (catalog only)
-        proj = state.projects.get(pid)
+        proj = state.catalog.projects.get(pid)
         sample = None
         if proj:
             sample = next((s for s in proj.samples if s.sample_id == sid), None)
@@ -628,7 +717,7 @@ def build_project_summary_rows(state: RunState, project_filter: str = "All"):
     rows = []
     for pid in sorted(proj_samples.keys()):
         # get project 
-        proj_obj = state.projects.get(pid)
+        proj_obj = state.catalog.projects.get(pid)
         # get library type 
         library_type = (
             proj_obj.library_type 
@@ -675,7 +764,7 @@ def _iter_plan_samples(state: RunState, *, strict: bool):
             pid, sid = split_sample_uid(uid)
 
             # retrieve project
-            project = state.projects.get(pid)
+            project = state.catalog.projects.get(pid)
             if project is None:
                 if strict:
                     raise PlanIntegrityError(
@@ -710,7 +799,7 @@ def ensure_plan_integrity_or_raise(state: RunState) -> None:
     missing_samples = []  # list of (lane_id, pid, sid)
 
     for lane_id, pid, _, sid, sample in _iter_plan_samples(state, strict=False):
-        if pid not in state.projects:
+        if pid not in state.catalog.projects:
             missing_projects.add(pid)
             missing_samples.append((lane_id, pid, sid))
             continue
@@ -1019,4 +1108,3 @@ def export_samplesheets(
         raise ValueError(f"Unknown format: {format}")
 
     return out_paths
-

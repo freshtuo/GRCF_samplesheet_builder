@@ -2,11 +2,13 @@
 
 A UI-based tool for planning and exporting sequencing SampleSheets.
 
-Designed for structured lane planning, validation, and reproducible run configuration management.
+Designed for structured lane planning, validation, reproducible run configuration management, and lightweight team collaboration through a shared catalog folder.
 
 ## 🚀 What This Tool Does
 
 - Configure sequencing run settings (flowcell, lanes, read length)
+
+- Share indexes and imported projects across 2-3 users through a shared folder
 
 - Import project sample metadata
 
@@ -17,6 +19,8 @@ Designed for structured lane planning, validation, and reproducible run configur
 - Export standardized SampleSheet files
 
 - Save and reload planning snapshots (Plans)
+
+- Keep sequencing plans private per user while reusing the same shared project catalog
 
 ## 🧱 Installation
 Requirements
@@ -58,12 +62,14 @@ The application will launch in your browser.
 
 🧠 Developer Architecture → [ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
-## 🗂 Directory Structure
+## 🗂 Storage Model
 
-The application uses a fixed base directory:
+The application now uses two storage locations.
+
+Local per-user workspace:
 
 ```markdown
-~/.samplesheet_tool/
+~/.samplesheet_tool_ui/
 ```
 
 Structure:
@@ -74,10 +80,22 @@ temp/
 outputs/
 ```
 
-Exports are written to:
+Shared catalog folder configured in the Settings dialog:
+
 ```markdown
-outputs/
+<shared_catalog_dir>/
+├── indexes.json
+└── projects/
+    ├── PROJECT_A.json
+    └── PROJECT_B.json
 ```
+
+Notes:
+- `config.json`, plans, temp files, outputs, lane assignments, and validation state stay local per user.
+- `indexes.json` and `projects/*.json` are shared across users.
+- If you change the shared catalog folder, copy existing shared files to the new location if you want to keep using them.
+
+Exports are written to the local `outputs/` directory unless changed in Settings.
 ## 🐞 Reporting Issues
 
 If you encounter a bug:
@@ -101,4 +119,3 @@ Please report issues via:
 - GitHub Issues (recommended)
 
 - Or contact the project maintainer
-

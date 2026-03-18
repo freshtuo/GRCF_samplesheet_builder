@@ -20,6 +20,7 @@ from samplesheet_tool.config import SAMPLE_ID_ALLOWED
 # ============================================================
 
 def read_project_table(path: Path) -> pd.DataFrame:
+    """Read a project table from TSV/TXT/CSV into a DataFrame."""
     suffix = path.suffix.lower()
     if suffix in {".tsv", ".txt"}:
         return pd.read_csv(path, sep="\t", comment="#")
@@ -46,6 +47,7 @@ _COLUMN_ALIASES = {
 }
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize project-table column names to the app's internal schema."""
     df = df.copy()
 
     renamed = {}
@@ -63,12 +65,14 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 # ============================================================
 
 def check_sample_id_schema(df: pd.DataFrame) -> None:
+    """Ensure the sample_id column exists row-by-row without missing values."""
     if df["sample_id"].isna().any():
         rows = df.index[df["sample_id"].isna()].tolist()[:5]
         raise ValueError(f"sample_id is missing at rows {rows}")
 
 
 def check_index_presence(df: pd.DataFrame, prefix: str) -> None:
+    """Require at least an index ID or sequence for each i7/i5 row."""
     id_col = f"{prefix}_index_id"
     seq_col = f"{prefix}_index_seq"
 
@@ -84,6 +88,7 @@ def check_index_presence(df: pd.DataFrame, prefix: str) -> None:
 
 
 def check_required_reads(df: pd.DataFrame) -> None:
+    """Validate that required_reads_m values are numeric and non-negative."""
     if "required_reads_m" not in df.columns:
         return
 
@@ -130,6 +135,7 @@ def resolve_default_required_reads_per_sample(
 # ============================================================
 
 def check_sample_ids(df: pd.DataFrame) -> None:
+    """Validate sample_id format and uniqueness within one project file."""
     pat = re.compile(SAMPLE_ID_ALLOWED)
 
     bad_mask = ~df["sample_id"].astype(str).str.match(pat)
@@ -149,6 +155,7 @@ def check_index_seq_uniqueness(
     samples: list[Sample],
     index_type: str,
 ) -> None:
+    """Ensure index sequences are unique within the imported project."""
     if index_type == "single":
         seqs = [s.i7_seq for s in samples]
         dup = pd.Series(seqs).duplicated()
@@ -180,6 +187,7 @@ def import_project_from_file(
     default_required_reads_m: Optional[int], 
     required_reads_mode: Literal["per_sample", "per_project"] = "per_sample", 
 ) -> Project:
+    """Read, validate, and convert one project file into a Project object."""
 
     if index_type not in {"single", "dual"}:
         raise ValueError(f"Invalid index_type: {index_type}")
@@ -234,8 +242,8 @@ def import_project_from_file(
     # ------------------------
     samples: list[Sample] = []
 
-    single_lookup = state.index_tables.single
-    dual_lookup = state.index_tables.dual
+    single_lookup = state.catalog.index_tables.single
+    dual_lookup = state.catalog.index_tables.dual
 
     for _, r in df.iterrows():
         sid = str(r["sample_id"]).strip()
@@ -303,4 +311,3 @@ def import_project_from_file(
         index_type=index_type,
         sequencing_type=sequencing_type, 
     )
-

@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Optional
 
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
 # ---- defaults ----
@@ -29,6 +29,16 @@ FLOWCELL_PRESETS = {
 }
 
 
+def default_shared_catalog_dir() -> str:
+    """Default shared path value shown in settings until the user picks another folder."""
+    return str(Path.home() / ".samplesheet_tool_ui")
+
+
+def default_user_name() -> str:
+    """Infer a simple default user name from the current home directory."""
+    return Path.home().name
+
+
 @dataclass
 class RuntimeConfig:
     flowcell_type: str = "10B"
@@ -36,6 +46,8 @@ class RuntimeConfig:
     lane_capacity_m: int = FLOWCELL_PRESETS["10B"]["lane_capacity_m"]
 
     output_dir: Optional[str] = None
+    shared_catalog_dir: Optional[str] = field(default_factory=default_shared_catalog_dir)
+    user_name: str = field(default_factory=default_user_name)
 
     read1_len: int = DEFAULT_READ1
     read2_len: int = DEFAULT_READ2
@@ -44,14 +56,17 @@ class RuntimeConfig:
 
 
 def config_path(base_dir: Path) -> Path:
+    """Return the path to the persisted runtime config file."""
     return base_dir / "config.json"
 
 
 def default_config() -> RuntimeConfig:
+    """Create a RuntimeConfig populated with the app defaults."""
     return RuntimeConfig()
 
 
 def load_runtime_config(base_dir: Path) -> RuntimeConfig:
+    """Load runtime config from disk, falling back to defaults on error."""
     p = config_path(base_dir)
     if not p.exists():
         return default_config()
@@ -70,6 +85,7 @@ def load_runtime_config(base_dir: Path) -> RuntimeConfig:
 
 
 def save_runtime_config(base_dir: Path, cfg: RuntimeConfig) -> Path:
+    """Persist the current runtime config to disk."""
     p = config_path(base_dir)
     p.write_text(json.dumps(asdict(cfg), indent=2), encoding="utf-8")
     return p

@@ -10,6 +10,8 @@ SampleSheet Tool is a UI-based sequencing planning system that allows you to:
 
 - Configure run environment (flowcell, lanes, read length)
 
+- Share indexes and imported projects through a shared folder
+
 - Import index mapping tables (dual or single)
 
 - Import project sample metadata
@@ -21,6 +23,10 @@ SampleSheet Tool is a UI-based sequencing planning system that allows you to:
 - Export SampleSheet files
 
 - Save and reload planning snapshots (Plans)
+
+Important distinction:
+- shared: indexes and projects
+- local per user: lane assignments, messages, validation state, saved plans, outputs
 
 The application runs via:
 
@@ -53,6 +59,8 @@ These are not dialogs — they are permanent parts of the layout.
 
 ### 🧩 3.1 Index Panel
 Used to manage index mapping tables.
+
+Indexes are shared through the configured shared catalog folder, so other users can see them after refreshing.
 
 **Import Mapping Table**
 
@@ -101,6 +109,8 @@ Used to:
 - Select active project
 - Remove project from panel
 
+Projects shown here come from the shared catalog folder.
+
 When importing a project you define:
 - Project ID
 - Index type (dual/single)
@@ -109,7 +119,7 @@ When importing a project you define:
 - Default required reads per sample
 
 Project removal:
-- Removes it from the panel
+- Removes it from the shared catalog
 - Does NOT automatically modify lane assignments
 
 ### 🧪 3.3 Samples Panel
@@ -189,15 +199,21 @@ Used to configure runtime:
 - Read1 length
 - Read2 length
 - Output directory
+- Shared Catalog Folder
+- User Name (optional)
 - Max saved plans
 
 Changing settings:
 - Clears lane assignments
-- Keeps imported projects
+- Keeps shared projects in the shared catalog
+
+Notes:
+- All collaborating users should set the same `Shared Catalog Folder`.
+- If you switch to a different shared folder, copy `indexes.json` and the `projects/` folder there if you want to keep the existing shared data.
 
 Settings are saved to:
 ```text
-~/.samplesheet_tool/config.json
+~/.samplesheet_tool_ui/config.json
 ```
 
 ### 📊 4.2 Summary Dialog
@@ -244,10 +260,9 @@ High-level overview.
 
 Plans store:
 - Runtime snapshot
-- Projects
-- Samples
 - Lane assignments
 - Messages
+- UI selection state
 
 Loading a plan restores:
 - Flowcell
@@ -255,12 +270,28 @@ Loading a plan restores:
 - Capacity
 - Read lengths
 
+Plans do not own the shared project catalog. The app reloads shared projects/indexes from the configured shared folder.
+
 This guarantees reproducibility.
 
 Plans stored in:
 ```text
-~/.samplesheet_tool/plans/
+~/.samplesheet_tool_ui/plans/
 ```
+
+### 🔄 4.4 Refresh Shared Catalog
+
+Use the `Refresh Shared` toolbar button when another user has imported or removed indexes/projects.
+
+Refresh behavior:
+- reloads shared `indexes.json`
+- reloads shared `projects/*.json`
+- keeps your local lane assignments unchanged
+- if your selected project was deleted, the app selects the first available project
+
+If your local lane plan still references a deleted shared project:
+- validation shows an error
+- export is blocked until the lane assignments are fixed
 
 ## 5️⃣ Validation Model
 
@@ -303,7 +334,7 @@ Export requires:
 - Valid plan
 - No lane-level errors
 - No global errors
-- Project metadata still present
+- Shared project metadata still present
 
 You choose:
 - Output directory
@@ -346,4 +377,3 @@ output_dir/prefix.**
 ├── temp/
 └── outputs/
 ```
-

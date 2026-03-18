@@ -17,6 +17,7 @@ from samplesheet_tool.ui.state import (
     make_sample_uid, split_sample_uid, 
 )
 from samplesheet_tool.ui import actions
+from samplesheet_tool.ui.shared_catalog import load_shared_catalog, shared_project_path
 from samplesheet_tool.ui.runtime_config import RuntimeConfig, save_runtime_config, FLOWCELL_PRESETS
 from samplesheet_tool.ui import __version__
 
@@ -52,6 +53,36 @@ def panel_btn(btn: Any) -> Any:
     )
 
     return btn
+
+
+def _sync_catalog_if_projects_missing(state: RunState) -> None:
+    """Refresh the shared catalog if local project entries reference deleted project files."""
+    if state.shared_catalog_dir is None or not state.catalog.projects:
+        return
+
+    try:
+        missing = [
+            pid for pid in state.catalog.projects.keys()
+            if not shared_project_path(state.shared_catalog_dir, pid).exists()
+        ]
+    except PermissionError as e:
+        state.startup_warning = (
+            f"No permission to read the shared catalog folder: {e}. "
+            'The app is still usable with the last loaded in-memory data. Use "Refresh Shared" after access is restored.'
+        )
+        ui.notify(state.startup_warning, type="negative")
+        return
+
+    if not missing:
+        return
+
+    actions.refresh_shared_catalog(state)
+    preview = ", ".join(sorted(missing)[:3])
+    suffix = "..." if len(missing) > 3 else ""
+    ui.notify(
+        f"Shared catalog changed; removed project(s) no longer available locally: {preview}{suffix}",
+        type="warning",
+    )
 
 # -------------------------
 # lane reads helpers
@@ -131,24 +162,27 @@ def open_settings_dialog(state: RunState, refresh_all):
         flowcell_type=state.flowcell_type, 
         n_lanes=state.n_lanes,
         lane_capacity_m=state.lane_capacity_m,
+        output_dir=str(state.output_dir),
+        shared_catalog_dir=str(state.shared_catalog_dir) if state.shared_catalog_dir else None,
+        user_name=state.user_name,
         read1_len=state.read1_len,
         read2_len=state.read2_len,
         max_plans=state.max_plans,
     )
 
-    with ui.dialog() as dialog, ui.card().classes("w-[500px]"):
+    with ui.dialog() as dialog, ui.card().classes("w-[760px] max-w-full"):
         ui.label("Runtime Settings").classes("text-lg font-bold")
 
         ui.separator()
 
-        ##ui.label("Flowcell")
-        flowcell_select = ui.select(
-            options=list(FLOWCELL_PRESETS.keys()),
-            value=cfg.flowcell_type,
-            label="Flowcell Type",
-        ).classes("w-30")
-        lanes_input = ui.number("Number of Lanes", value=cfg.n_lanes)
-        capacity_input = ui.number("Reads per Lane (M)", value=cfg.lane_capacity_m)
+        with ui.row().classes("w-full gap-3 items-end no-wrap"):
+            flowcell_select = ui.select(
+                options=list(FLOWCELL_PRESETS.keys()),
+                value=cfg.flowcell_type,
+                label="Flowcell Type",
+            ).classes("flex-1")
+            lanes_input = ui.number("Number of Lanes", value=cfg.n_lanes).classes("flex-1")
+            capacity_input = ui.number("Reads per Lane (M)", value=cfg.lane_capacity_m).classes("flex-1")
 
         # update n_lanes, lane_capacity_m based on selected flowcell
         def on_flowcell_change(e):
@@ -168,28 +202,50 @@ def open_settings_dialog(state: RunState, refresh_all):
         # base dir: display only
         base_input = ui.input("Base Folder", value=str(state.base_dir)).classes("w-full").props("readonly")
 
-        output_input = ui.input("Output Folder", value=str(state.output_dir)).classes("w-full")
+        with ui.row().classes("w-full gap-3 items-end no-wrap"):
+            output_input = ui.input("Output Folder", value=str(state.output_dir)).classes("grow")
 
-        def choose_output_folder():
-            root = Tk()
-            root.withdraw()
-            folder = filedialog.askdirectory()
-            root.destroy()
-            if folder:
-                output_input.value = folder
+            def choose_output_folder():
+                root = Tk()
+                root.withdraw()
+                folder = filedialog.askdirectory()
+                root.destroy()
+                if folder:
+                    output_input.value = folder
 
-        panel_btn(ui.button("Choose Output Folder", on_click=choose_output_folder))
+            panel_btn(ui.button("Choose Output Folder", on_click=choose_output_folder)).classes("shrink-0")
+
+        with ui.row().classes("w-full gap-3 items-end no-wrap"):
+            shared_input = ui.input(
+                "Shared Catalog Folder",
+                value=cfg.shared_catalog_dir or "",
+                placeholder=r"Example: Z:\grcf_samplesheet_catalog or \\server\labshare\grcf_samplesheet_catalog",
+            ).classes("grow")
+
+            def choose_shared_folder():
+                root = Tk()
+                root.withdraw()
+                folder = filedialog.askdirectory()
+                root.destroy()
+                if folder:
+                    shared_input.value = folder
+
+            panel_btn(ui.button("Choose Shared Folder", on_click=choose_shared_folder)).classes("shrink-0")
+
+        with ui.row().classes("w-full gap-3 items-end no-wrap"):
+            user_input = ui.input(
+                "User Name",
+                value=cfg.user_name or "",
+                placeholder="Example: taz2008",
+            ).classes("flex-1")
+
+            max_plans_input = ui.number("Max saved plans", value=cfg.max_plans).classes("flex-1")
 
         ui.separator()
 
-        ##ui.label("Read Length")
-        r1_input = ui.number("Read1 Length", value=cfg.read1_len)
-        r2_input = ui.number("Read2 Length", value=cfg.read2_len)
-
-        ui.separator()
-
-        ##ui.label("Plan")
-        max_plans_input = ui.number("Max saved plans", value=cfg.max_plans)
+        with ui.row().classes("w-full gap-3 items-end no-wrap"):
+            r1_input = ui.number("Read1 Length", value=cfg.read1_len).classes("flex-1")
+            r2_input = ui.number("Read2 Length", value=cfg.read2_len).classes("flex-1")
 
         with ui.row().classes("justify-end w-full"):
             panel_btn(ui.button("Cancel", on_click=dialog.close))
@@ -202,6 +258,9 @@ def open_settings_dialog(state: RunState, refresh_all):
                 state.read1_len = int(r1_input.value)
                 state.read2_len = int(r2_input.value)
                 state.max_plans = int(max_plans_input.value)
+                state.user_name = (user_input.value or "").strip()
+                shared_raw = (shared_input.value or "").strip()
+                state.shared_catalog_dir = Path(shared_raw) if shared_raw else None
 
                 # apply output dir to state
                 raw = (output_input.value or "").strip()
@@ -227,11 +286,35 @@ def open_settings_dialog(state: RunState, refresh_all):
                     n_lanes=state.n_lanes,
                     lane_capacity_m=state.lane_capacity_m,
                     output_dir=str(state.output_dir), 
+                    shared_catalog_dir=str(state.shared_catalog_dir) if state.shared_catalog_dir else None,
+                    user_name=state.user_name,
                     read1_len=state.read1_len,
                     read2_len=state.read2_len,
                     max_plans=state.max_plans,
                 )
                 save_runtime_config(state.base_dir, new_cfg)
+
+                if state.shared_catalog_dir is None:
+                    if state.catalog.projects or state.catalog.index_tables.dual or state.catalog.index_tables.single:
+                        state.startup_warning = (
+                            "Shared catalog is disconnected. The app is using the last loaded projects and indexes in memory only."
+                        )
+                        ui.notify(state.startup_warning, type="warning")
+                    else:
+                        state.startup_warning = None
+                else:
+                    try:
+                        state.catalog = load_shared_catalog(state.shared_catalog_dir)
+                        state.startup_warning = None
+                    except PermissionError as e:
+                        state.startup_warning = (
+                            f"No permission to read the shared catalog folder: {e}. "
+                            'The app is still usable with the last loaded in-memory data. Use "Refresh Shared" after access is restored.'
+                        )
+                        ui.notify(state.startup_warning, type="negative")
+                    except Exception as e:
+                        ui.notify(f"Shared catalog load failed: {e}", type="warning")
+                state.ensure_valid_project_selection()
 
                 # refresh UI
                 refresh_all()
@@ -276,6 +359,7 @@ def build_toolbar(state: RunState, refresh_all) -> None:
             return btn
 
         tb(ui.button("⚙ Settings", on_click=lambda: open_settings_dialog(state, refresh_all)))
+        tb(ui.button("Refresh Shared", on_click=lambda: _refresh_shared_catalog(state, refresh_all)))
         tb(ui.button("Import Project", on_click=lambda: import_project_dialog(state, refresh_all)))
         tb(ui.button("Open Plan", on_click=lambda: open_plan_dialog(state, refresh_all)))
         tb(ui.button("Save Plan", on_click=lambda: do_save_plan(state)))
@@ -295,6 +379,18 @@ def build_toolbar(state: RunState, refresh_all) -> None:
 
         update_export_enabled()
         # refresh_all will call update_export_enabled as well, through external parameter
+
+
+def _refresh_shared_catalog(state: RunState, refresh_all) -> None:
+    """Toolbar action for manually reloading the shared catalog."""
+    try:
+        actions.refresh_shared_catalog(state)
+    except Exception as e:
+        ui.notify(f"Refresh failed: {e}", type="negative")
+        return
+    state.startup_warning = None
+    ui.notify("Shared catalog refreshed", type="positive")
+    refresh_all()
 
 
 def import_project_dialog(state: RunState, refresh_all) -> None:
@@ -420,7 +516,7 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
                 ui.notify("Project ID is required", type="negative")
                 return
 
-            if pid in state.projects:
+            if pid in state.catalog.projects:
                 ui.notify(
                     f"Project ID '{pid}' already exists. "
                     "Please use a different Project ID or remove the existing project first.",
@@ -528,12 +624,12 @@ def open_plan_dialog(state: RunState, refresh_all) -> None:
             state.output_dir = new_state.output_dir
             state.max_plans = new_state.max_plans
 
-            state.projects = new_state.projects
             state.selected_project_id = new_state.selected_project_id
             state.lanes = new_state.lanes
             state.samples_rows_per_page = new_state.samples_rows_per_page
             state.assignments = new_state.assignments
             state.selected_sample_uids = new_state.selected_sample_uids
+            state.ensure_valid_project_selection()
 
             # Close dialog and update the UI display
             ui.notify("Plan loaded", type="positive")
@@ -909,7 +1005,7 @@ def import_mapping_dialog(state: RunState, refresh_all) -> None:
 
 
 def build_indexes_panel(state: RunState, refresh_all) -> None:
-    stats = state.index_tables.stats()
+    stats = state.catalog.index_tables.stats()
     total_n = stats["dual_ids"] + stats["single_ids"]
 
     with ui.card().classes("w-full"):
@@ -971,22 +1067,23 @@ def build_indexes_panel(state: RunState, refresh_all) -> None:
 
 def build_project_panel(state: RunState, refresh_all) -> None:
     """Creates a project selection interface that acts as a master-detail controller."""
+    _sync_catalog_if_projects_missing(state)
     ui.label("Projects").classes("text-base font-semibold")
 
     # Safety check for empty state
-    if not state.projects:
+    if not state.catalog.projects:
         ui.label("No projects imported").classes("text-sm text-gray-500")
         return
 
     # Build the list of options with metadata
-    project_ids = sorted(state.projects.keys())
+    project_ids = sorted(state.catalog.projects.keys())
 
     # intialize the selected_project_id so it's non-empty all time
     if state.selected_project_id not in project_ids:
         state.selected_project_id = project_ids[0]
 
     def _project_label(pid: str):
-        p = state.projects[pid]
+        p = state.catalog.projects[pid]
         meta = []
         if p.index_type:
             meta.append(p.index_type)
@@ -1011,7 +1108,7 @@ def build_project_panel(state: RunState, refresh_all) -> None:
 
     sel.on_value_change(on_change)
 
-    p = state.projects[state.selected_project_id]
+    p = state.catalog.projects[state.selected_project_id]
 
     with ui.row().classes("w-full items-center gap-2"):
         ui.label(f"Samples: {p.n_samples}").classes("text-xs text-gray-600")
@@ -1023,7 +1120,7 @@ def build_project_panel(state: RunState, refresh_all) -> None:
         ).classes("ml-auto")
 
     ## debug
-    ##ui.label(f"DEBUG pid={state.selected_project_id} projects={list(state.projects.keys())}").classes("text-xs text-gray-500")
+    ##ui.label(f"DEBUG pid={state.selected_project_id} projects={list(state.catalog.projects.keys())}").classes("text-xs text-gray-500")
     ##ui.label(f"Selected: {state.selected_project_id}").classes("text-xs text-gray-500")
 
 def _confirm_remove_project(state: RunState, refresh_all):
@@ -1058,12 +1155,12 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
 
     # Safety check: ensure a project is actually selected
     pid = state.selected_project_id
-    if not pid or pid not in state.projects:
+    if not pid or pid not in state.catalog.projects:
         ui.label("Select a project to view samples").classes("text-sm text-gray-500")
         return
 
     # Prepare table rows
-    p = state.projects[pid]
+    p = state.catalog.projects[pid]
     ##ui.label(f"DEBUG samples={len(p.samples)}").classes("text-xs text-gray-500") # DEBUG
 
     # get index type of the current project
@@ -1338,7 +1435,7 @@ def build_messages_panel(state: RunState, refresh_all) -> None:
             lane_opts = ["(any)"] + [str(i) for i in range(1, state.n_lanes + 1)]
             lane_sel = ui.select(options=lane_opts, value="(any)", label="Lane").classes("w-28")
 
-            proj_opts = ["(any)"] + sorted(state.projects.keys())
+            proj_opts = ["(any)"] + sorted(state.catalog.projects.keys())
             proj_sel = ui.select(options=proj_opts, value="(any)", label="Project").classes("w-40")
 
             panel_btn(ui.button("Clear index import msgs", on_click=lambda: _clear_source("index_import")))
@@ -1442,6 +1539,11 @@ def build_main_view(state: RunState) -> None:
     # Create a persistent outer container
     container = ui.column().classes("w-full h-screen overflow-hidden")
 
+    def _dismiss_startup_warning() -> None:
+        """Hide the current startup banner for the active session."""
+        state.startup_warning = None
+        refresh_all()
+
     # Define how to completely redraw the UI
     def refresh_all():
         # Wipes every existing UI element inside the main column
@@ -1449,6 +1551,17 @@ def build_main_view(state: RunState) -> None:
         with container:
             # Top section
             build_toolbar(state, refresh_all)
+
+            if state.startup_warning:
+                with ui.row().classes(
+                    "w-full items-center gap-3 px-4 py-3 bg-amber-100 text-amber-900 border-b border-amber-300"
+                ):
+                    ui.icon("warning").classes("text-lg")
+                    ui.label(state.startup_warning).classes("text-sm")
+                    ui.button(
+                        "Dismiss",
+                        on_click=lambda: _dismiss_startup_warning(),
+                    ).props("flat dense no-caps").classes("ml-auto text-amber-900")
 
             ui.separator()
 
@@ -1481,4 +1594,3 @@ def build_main_view(state: RunState) -> None:
 
     # Initial render
     refresh_all()
-

@@ -27,13 +27,14 @@ class LaneStatus(str, Enum):
     ERROR = "error"
 
 class PlanIntegrityError(RuntimeError):
-    """Raised when lanes reference projects/samples removed from state.projects."""
+    """Raised when lanes reference projects/samples removed from the shared catalog."""
     pass
 
 MessageLevel = Literal["error", "warning"]
 
 
 def default_store_dir() -> Path:
+    """Return the default local directory used to store UI data files."""
     # internal tool: under user home directory, can be changed other directories later
     base = Path.home() / ".samplesheet_tool_ui"
     base.mkdir(parents=True, exist_ok=True)
@@ -63,14 +64,17 @@ class ValidationResult:
 
     @property
     def errors(self) -> List[Problem]:
+        """Return validation problems flagged as errors."""
         return [p for p in self.problems if p.level == "ERROR"]
 
     @property
     def warnings(self) -> List[Problem]:
+        """Return validation problems flagged as warnings."""
         return [p for p in self.problems if p.level == "WARN"]
 
     @property
     def ok(self) -> bool:
+        """Report whether validation completed without any errors."""
         return len(self.errors) == 0
 
 
@@ -83,7 +87,18 @@ class IndexTables:
     single: Dict[str, str] = field(default_factory=dict)           # index_id -> sequence
 
     def stats(self) -> Dict[str, int]:
+        """Return simple counts for the currently loaded index tables."""
         return {"dual_ids": len(self.dual), "single_ids": len(self.single)}
+
+
+@dataclass
+class SharedCatalog:
+    """Shared indexes and shared projects loaded from the team folder."""
+    index_tables: IndexTables = field(default_factory=IndexTables)
+    projects: Dict[str, "Project"] = field(default_factory=dict)
+    last_loaded_at: Optional[str] = None
+    indexes_updated_at: Optional[str] = None
+    indexes_updated_by: Optional[str] = None
 
 
 @dataclass
@@ -155,11 +170,13 @@ class SampleSheetRow:
 
 class BaseRenderer:
     def render(self, rows: list[SampleSheetRow]) -> str:
+        """Convert samplesheet rows into a concrete export format."""
         raise NotImplementedError
 
 
 class BaseSpaceRenderer(BaseRenderer):
     def render(self, rows: list[SampleSheetRow]) -> str:
+        """Render rows in the BaseSpace-compatible CSV format."""
         buf = io.StringIO()
         writer = csv.writer(
             buf, 
@@ -229,12 +246,14 @@ class IEMRenderer(BaseRenderer):
         instrument: str = "NovaSeq", 
         chemistry: str = "Amplicon", 
     ):
+        """Store IEM header settings used when rendering output."""
         self.read1 = read1
         self.read2 = read2
         self.instrument = instrument
         self.chemistry = chemistry
 
     def render(self, rows: list[SampleSheetRow]) -> str:
+        """Render rows in the Illumina Experiment Manager CSV format."""
         lines: list[str] = []
 
         # -------- Header --------
@@ -284,8 +303,7 @@ class IEMRenderer(BaseRenderer):
 
 @dataclass
 class RunState:
-    # Index mapping tables (merged global tables, one per type)
-    index_tables: IndexTables = field(default_factory=IndexTables)
+    catalog: SharedCatalog = field(default_factory=SharedCatalog)
     indexes_panel_collapsed: bool = True
     indexes_mapping_type: IndexMappingType = "dual" # dropdown selection in Indexes Panel
 
@@ -295,8 +313,10 @@ class RunState:
     # Validation cache (None = never validated or invalidated)
     validation_result: Optional[ValidationResult] = None
 
+    # App-level startup warning shown outside the Messages panel
+    startup_warning: Optional[str] = None
+
     # Project panel
-    projects: Dict[str, Project] = field(default_factory=dict)
     selected_project_id: Optional[str] = None
 
     # Lane panel (over-written in __post_init_)
@@ -326,8 +346,11 @@ class RunState:
     temp_dir: Path = field(init=False)
     output_dir: Path = field(init=False)
     max_plans: int = 25
+    shared_catalog_dir: Optional[Path] = None
+    user_name: str = ""
 
     def __post_init__(self):
+        """Initialize derived directories and normalize the lane map."""
         # resolve directories under base_dir
         self.plan_dir = self.base_dir / "plans"
         self.temp_dir = self.base_dir / "temp"
@@ -352,6 +375,10 @@ class RunState:
             self.output_dir = Path(cfg.output_dir)
         else:
             self.output_dir = self.base_dir / "outputs"
+
+        raw_shared_dir = (getattr(cfg, "shared_catalog_dir", None) or "").strip()
+        self.shared_catalog_dir = Path(raw_shared_dir) if raw_shared_dir else None
+        self.user_name = (getattr(cfg, "user_name", "") or "").strip()
 
         self.read1_len = int(cfg.read1_len)
         self.read2_len = int(cfg.read2_len)
@@ -380,14 +407,21 @@ class RunState:
                 if pid and pid not in lane.project_ids:
                     lane.project_ids.append(pid)
 
+    def ensure_valid_project_selection(self) -> None:
+        """Keep the selected project valid after refresh/load/remove operations."""
+        project_ids = sorted(self.catalog.projects.keys())
+        if self.selected_project_id not in project_ids:
+            self.selected_project_id = project_ids[0] if project_ids else None
+            self.selected_sample_uids.clear()
+
     # ---------- persistence ----------
     def to_dict(self) -> dict:
+        """Serialize the plan-owned state to a JSON-friendly dictionary."""
         return {
             "indexes_panel_collapsed": self.indexes_panel_collapsed,
             "indexes_mapping_type": self.indexes_mapping_type,
             "messages": [asdict(m) for m in self.messages], 
             "selected_project_id": self.selected_project_id,
-            "projects": {pid: asdict(p) for pid, p in self.projects.items()},
             "lanes": {str(lid): asdict(l) for lid, l in self.lanes.items()},
             "samples_rows_per_page": self.samples_rows_per_page,
             "selected_sample_uids": self.selected_sample_uids,
@@ -407,6 +441,7 @@ class RunState:
 
     @staticmethod
     def from_dict(d: dict) -> "RunState":
+        """Build a RunState instance from a saved plan dictionary."""
         rs = RunState()
 
         # indexes panel state
@@ -425,19 +460,7 @@ class RunState:
                     setattr(cfg, k, v)
             rs.apply_runtime_config(cfg)
         
-        # projects
         rs.selected_project_id = d.get("selected_project_id")
-
-        rs.projects = {}
-        for pid, pdata in (d.get("projects") or {}).items():
-            samples = [Sample(**s) for s in pdata.get("samples", [])]
-            rs.projects[pid] = Project(
-                project_id=pid, 
-                samples=samples, 
-                library_type=pdata.get("library_type"), 
-                index_type=pdata.get("index_type", "dual"), 
-                sequencing_type=pdata.get("sequencing_type", ""), 
-            )
 
         # lanes
         rs.lanes = {}
@@ -474,6 +497,7 @@ class RunState:
 
         # validation_result (no serializaion)
         rs.validation_result = None
+        rs.ensure_valid_project_selection()
         
         return rs
 
@@ -498,6 +522,7 @@ class RunState:
 
 
 def save_plan(state: RunState, path: Optional[Path] = None) -> Path:
+    """Write the current plan state to disk and prune older saved plans."""
     store = state.plan_dir
 
     if path is None:
@@ -512,6 +537,7 @@ def save_plan(state: RunState, path: Optional[Path] = None) -> Path:
 
 
 def load_plan(path: Path) -> RunState:
+    """Load a saved plan file into a new RunState instance."""
     d = json.loads(path.read_text(encoding="utf-8"))
     return RunState.from_dict(d)
 
@@ -536,44 +562,13 @@ def cleanup_saved_plans(store_dir: Path, keep_n: int) -> None:
             pass
 
 
-# -------------------------
-# index preset persistence
-# -------------------------
-
-def index_preset_path(state: RunState) -> Path:
-    # get JSON file storing index preset
-    return state.base_dir / "index_preset.json"
-
-def save_index_preset(state: RunState) -> None:
-    """Persist merged index tables (dual + single)."""
-    path = index_preset_path(state)
-    payload = {
-        "dual": state.index_tables.dual,
-        "single": state.index_tables.single,
-    }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-def load_index_preset(state: RunState) -> None:
-    """Load merged index tables if preset exists."""
-    path = index_preset_path(state)
-    if not path.exists():
-        return
-
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        state.index_tables.dual = data.get("dual", {})
-        state.index_tables.single = data.get("single", {})
-    except Exception:
-        # fail silently; preset is optional
-        pass
-
-
 def make_sample_uid(project_id: str, sample_id: str) -> str:
+    """Build the stable project/sample key used inside planning state."""
     return f"{project_id}{SAMPLE_UID_SEP}{sample_id}"
 
 def split_sample_uid(sample_uid: str) -> Tuple[str, str]:
+    """Split a sample UID back into project_id and sample_id parts."""
     if SAMPLE_UID_SEP in sample_uid:
         pid, sid = sample_uid.split(SAMPLE_UID_SEP, 1)
         return pid, sid
     return "", sample_uid
-
