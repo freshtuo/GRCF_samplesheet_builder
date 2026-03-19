@@ -50,6 +50,7 @@ Shared indexes and shared projects are **not** the authority in plan files. They
 - `catalog` for shared indexes and projects
 - lane assignments and lane status
 - messages
+- lightweight UI coordination flags for deferred shared-catalog refresh
 
 UI and actions should **only read/write `RunState`**.
 
@@ -147,7 +148,7 @@ Shared catalog projects
 ```markdown
 Define Runtime Settings
         ↓
-Refresh shared catalog if needed
+Load / auto-refresh shared catalog if needed
         ↓
 Assign shared projects to local lanes
         ↓
@@ -275,11 +276,14 @@ Collaboration is intentionally simple:
 - 2-3 users point the app to the same `shared_catalog_dir`
 - shared data: indexes and projects
 - local-only data: lane assignments, validation/messages, local plans, outputs
-- refresh is manual through the toolbar
+- the app also polls the shared catalog in the background
+- index-only changes update in memory without forcing a full page redraw
+- project add/remove/content changes trigger a deferred-safe UI refresh
+- the `Refresh Shared` toolbar button remains available for immediate manual reload
 - duplicate project IDs are rejected
 - removing an already-deleted project becomes a refresh case, not a crash
 
-The app does **not** implement real-time sync or shared lane planning.
+The app does **not** implement real-time shared lane planning. It uses lightweight polling plus safe deferred redraws instead.
 
 ---
 

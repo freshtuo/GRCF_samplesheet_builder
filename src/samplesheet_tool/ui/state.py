@@ -96,6 +96,7 @@ class SharedCatalog:
     """Shared indexes and shared projects loaded from the team folder."""
     index_tables: IndexTables = field(default_factory=IndexTables)
     projects: Dict[str, "Project"] = field(default_factory=dict)
+    project_updated_at: Dict[str, str] = field(default_factory=dict)
     last_loaded_at: Optional[str] = None
     indexes_updated_at: Optional[str] = None
     indexes_updated_by: Optional[str] = None
@@ -315,6 +316,14 @@ class RunState:
 
     # App-level startup warning shown outside the Messages panel
     startup_warning: Optional[str] = None
+    # True while a modal dialog is open; used to defer disruptive background redraws
+    ui_modal_open: bool = False
+    # Generic "redraw later" flag for banner/status-only UI changes detected during a modal
+    pending_ui_redraw: bool = False
+    # True when shared project data changed and the UI refresh must wait until dialogs close
+    pending_project_refresh: bool = False
+    # User-facing summary shown when a deferred shared-project refresh is finally applied
+    pending_project_refresh_notice: Optional[str] = None
 
     # Project panel
     selected_project_id: Optional[str] = None
@@ -348,6 +357,8 @@ class RunState:
     max_plans: int = 25
     shared_catalog_dir: Optional[Path] = None
     user_name: str = ""
+    # Background interval (seconds) for checking shared catalog updates from other users
+    shared_catalog_poll_seconds: int = 30
 
     def __post_init__(self):
         """Initialize derived directories and normalize the lane map."""

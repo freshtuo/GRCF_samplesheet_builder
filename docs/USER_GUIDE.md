@@ -61,6 +61,7 @@ These are not dialogs — they are permanent parts of the layout.
 Used to manage index mapping tables.
 
 Indexes are shared through the configured shared catalog folder, so other users can see them after refreshing.
+The app also checks for shared catalog changes in the background.
 
 **Import Mapping Table**
 
@@ -110,6 +111,7 @@ Used to:
 - Remove project from panel
 
 Projects shown here come from the shared catalog folder.
+If another user adds, removes, or replaces a project file with the same `project_id`, the app can detect that change and refresh the project UI automatically.
 
 When importing a project you define:
 - Project ID
@@ -281,13 +283,20 @@ Plans stored in:
 
 ### 🔄 4.4 Refresh Shared Catalog
 
-Use the `Refresh Shared` toolbar button when another user has imported or removed indexes/projects.
+Use the `Refresh Shared` toolbar button when you want to force an immediate reload of indexes/projects.
 
 Refresh behavior:
 - reloads shared `indexes.json`
 - reloads shared `projects/*.json`
 - keeps your local lane assignments unchanged
 - if your selected project was deleted, the app selects the first available project
+
+Automatic refresh behavior:
+- the app polls the shared catalog in the background
+- index updates are applied in memory without a full UI redraw
+- project add/remove/content changes trigger a UI refresh when the app is in a safe steady state
+- if a modal dialog is open, the refresh waits until the dialog is closed
+- if shared catalog access fails, the app keeps the last loaded in-memory snapshot and shows a warning banner
 
 If your local lane plan still references a deleted shared project:
 - validation shows an error

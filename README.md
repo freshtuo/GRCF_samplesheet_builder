@@ -10,6 +10,8 @@ Designed for structured lane planning, validation, reproducible run configuratio
 
 - Share indexes and imported projects across 2-3 users through a shared folder
 
+- Automatically detect shared catalog updates in the background and refresh project UI when needed
+
 - Import project sample metadata
 
 - Assign samples to lanes
@@ -94,6 +96,8 @@ Notes:
 - `config.json`, plans, temp files, outputs, lane assignments, and validation state stay local per user.
 - `indexes.json` and `projects/*.json` are shared across users.
 - If you change the shared catalog folder, copy existing shared files to the new location if you want to keep using them.
+- The app polls the shared catalog in the background. Index updates are applied quietly in memory; project changes trigger a safe UI refresh when no modal dialog is open.
+- If shared catalog access fails, the app can continue using the last loaded in-memory snapshot and will show a warning banner.
 
 Exports are written to the local `outputs/` directory unless changed in Settings.
 ## 🐞 Reporting Issues

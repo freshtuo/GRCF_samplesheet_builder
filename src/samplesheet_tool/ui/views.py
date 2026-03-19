@@ -72,17 +72,175 @@ def _sync_catalog_if_projects_missing(state: RunState) -> None:
         )
         ui.notify(state.startup_warning, type="negative")
         return
+    except Exception as e:
+        ui.notify(f"Shared catalog sync check failed: {e}", type="warning")
+        return
 
     if not missing:
         return
 
-    actions.refresh_shared_catalog(state)
+    try:
+        actions.refresh_shared_catalog(state)
+    except Exception as e:
+        ui.notify(f"Shared catalog refresh failed: {e}", type="warning")
+        return
     preview = ", ".join(sorted(missing)[:3])
     suffix = "..." if len(missing) > 3 else ""
     ui.notify(
         f"Shared catalog changed; removed project(s) no longer available locally: {preview}{suffix}",
         type="warning",
     )
+
+
+def _project_signature(state: RunState) -> tuple[tuple[str, str], ...]:
+    """Return a lightweight signature of shared projects for change detection."""
+    return tuple(
+        sorted(
+            (pid, state.catalog.project_updated_at.get(pid, ""))
+            for pid in state.catalog.projects.keys()
+        )
+    )
+
+
+def _format_project_refresh_notice(
+    old_sig: tuple[tuple[str, str], ...],
+    new_sig: tuple[tuple[str, str], ...],
+) -> str:
+    """Summarize shared-project changes for a single user-facing notice."""
+    old_map = dict(old_sig)
+    new_map = dict(new_sig)
+    added = sorted(set(new_map) - set(old_map))
+    removed = sorted(set(old_map) - set(new_map))
+    changed = sorted(
+        pid for pid in (set(old_map) & set(new_map))
+        if old_map[pid] != new_map[pid]
+    )
+    parts: list[str] = []
+    if added:
+        parts.append(f"added: {len(added)}")
+    if removed:
+        parts.append(f"removed: {len(removed)}")
+    if changed:
+        parts.append(f"updated: {len(changed)}")
+    summary = ", ".join(parts) if parts else "content changed"
+    return f"Shared projects updated ({summary})."
+
+
+def _flush_pending_project_refresh(state: RunState, refresh_all) -> None:
+    """Apply any deferred project refresh once the UI is no longer in a modal state."""
+    if state.ui_modal_open:
+        return
+    if state.pending_ui_redraw:
+        state.pending_ui_redraw = False
+        refresh_all()
+        return
+    if not state.pending_project_refresh:
+        return
+    notice = state.pending_project_refresh_notice or "Shared projects updated."
+    state.pending_project_refresh = False
+    state.pending_project_refresh_notice = None
+    state.ensure_valid_project_selection()
+    ui.notify(notice, type="warning")
+    refresh_all()
+
+
+def _register_dialog_lifecycle(dialog, state: RunState, refresh_all) -> None:
+    """Track dialog visibility so background refresh can avoid disruptive redraws."""
+    dialog.on("show", lambda _e: setattr(state, "ui_modal_open", True))
+    dialog.on("hide", lambda _e: _on_dialog_hide(state))
+
+
+def tracked_dialog(state: RunState, refresh_all):
+    """Create a dialog with lifecycle hooks for deferred background refresh."""
+    dialog = ui.dialog()
+    _register_dialog_lifecycle(dialog, state, refresh_all)
+    return dialog
+
+
+def _on_dialog_hide(state: RunState) -> None:
+    """Mark dialogs closed so deferred refresh can be flushed by the background timer."""
+    state.ui_modal_open = False
+
+
+def _background_refresh_shared_catalog(state: RunState, refresh_all) -> None:
+    """Poll the shared catalog and apply quiet or deferred updates as needed."""
+    if state.shared_catalog_dir is None:
+        return
+
+    try:
+        new_catalog = load_shared_catalog(state.shared_catalog_dir)
+    except PermissionError as e:
+        warning = (
+            f"No permission to read the shared catalog folder: {e}. "
+            'The app is still usable with the last loaded in-memory data. Use "Refresh Shared" after access is restored.'
+        )
+        if state.startup_warning != warning:
+            state.startup_warning = warning
+            ui.notify(warning, type="negative")
+            if not state.ui_modal_open:
+                refresh_all()
+            else:
+                state.pending_ui_redraw = True
+        return
+    except Exception as e:
+        warning = (
+            f"Shared catalog auto-refresh failed: {e}. "
+            'The app is still usable with the last loaded in-memory data. Use "Refresh Shared" to try again.'
+        )
+        if state.startup_warning != warning:
+            state.startup_warning = warning
+            ui.notify(warning, type="warning")
+            if not state.ui_modal_open:
+                refresh_all()
+            else:
+                state.pending_ui_redraw = True
+        return
+
+    old_project_sig = _project_signature(state)
+    new_project_sig = tuple(
+        sorted((pid, new_catalog.project_updated_at.get(pid, "")) for pid in new_catalog.projects.keys())
+    )
+    project_changed = old_project_sig != new_project_sig
+
+    old_index_marker = state.catalog.indexes_updated_at or ""
+    new_index_marker = new_catalog.indexes_updated_at or ""
+    index_changed = old_index_marker != new_index_marker
+    
+    # warning_cleared means 
+    # there used to be a warning banner, and now it has been cleared
+    warning_cleared = bool(state.startup_warning)
+    state.startup_warning = None
+
+    if not index_changed and not project_changed:
+        if warning_cleared and not state.ui_modal_open:
+            refresh_all()
+        elif warning_cleared:
+            state.pending_ui_redraw = True
+        return
+
+    state.catalog.last_loaded_at = new_catalog.last_loaded_at
+
+    if project_changed:
+        state.catalog = new_catalog
+        notice = _format_project_refresh_notice(old_project_sig, new_project_sig)
+        if state.ui_modal_open:
+            state.pending_project_refresh = True
+            state.pending_project_refresh_notice = notice
+            return
+        state.ensure_valid_project_selection()
+        ui.notify(notice, type="warning")
+        refresh_all()
+        return
+
+    if index_changed:
+        state.catalog.index_tables = new_catalog.index_tables
+        state.catalog.indexes_updated_at = new_catalog.indexes_updated_at
+        state.catalog.indexes_updated_by = new_catalog.indexes_updated_by
+        state.catalog.last_loaded_at = new_catalog.last_loaded_at
+        if warning_cleared and not state.ui_modal_open:
+            refresh_all()
+        elif warning_cleared:
+            state.pending_ui_redraw = True
 
 # -------------------------
 # lane reads helpers
@@ -170,7 +328,7 @@ def open_settings_dialog(state: RunState, refresh_all):
         max_plans=state.max_plans,
     )
 
-    with ui.dialog() as dialog, ui.card().classes("w-[760px] max-w-full"):
+    with tracked_dialog(state, refresh_all) as dialog, ui.card().classes("w-[760px] max-w-full"):
         ui.label("Runtime Settings").classes("text-lg font-bold")
 
         ui.separator()
@@ -397,7 +555,7 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
     """
     Creates a modal popup (dialog) used for importing a project from CSV/TSV/TXT file.
     """
-    with ui.dialog() as dialog, ui.card().classes("w-[520px]"):
+    with tracked_dialog(state, refresh_all) as dialog, ui.card().classes("w-[520px]"):
         ui.label("Import Project").classes("text-base font-semibold")
 
         # -------------------------
@@ -583,7 +741,7 @@ def open_plan_dialog(state: RunState, refresh_all) -> None:
     plans = sorted(store.glob("plan_*.json"), reverse=True)
     options = [str(p) for p in plans[:30]]
 
-    with ui.dialog() as dialog, ui.card().classes("w-[720px]"):
+    with tracked_dialog(state, refresh_all) as dialog, ui.card().classes("w-[720px]"):
         ui.label("Open Plan").classes("text-base font-semibold")
 
         # Handle the case where no plans exist
@@ -655,7 +813,7 @@ def do_validate(state: RunState, refresh_all) -> None:
 
 
 def open_summary_dialog(state: RunState) -> None:
-    with ui.dialog().props("persistent") as dialog:
+    with tracked_dialog(state, lambda: None).props("persistent") as dialog:
         with ui.card().classes("w-[1100px] max-w-full"):
             # ---------- Header ----------
             with ui.row().classes("w-full items-center"):
@@ -772,7 +930,7 @@ def do_export(state: RunState) -> None:
         ui.notify("Cannot export: Errors present", type="negative")
         return
 
-    with ui.dialog() as dialog, ui.card().classes("w-[520px]"):
+    with tracked_dialog(state, lambda: None) as dialog, ui.card().classes("w-[520px]"):
         ui.label("Export SampleSheet").classes("text-base font-semibold")
 
         out_dir = ui.input(
@@ -843,7 +1001,7 @@ def _do_export_confirm(state: RunState, out_dir: str, prefix: str, fmt: str, dia
 
 def import_mapping_dialog(state: RunState, refresh_all) -> None:
     """Upload a mapping table (CSV/TSV) and merge into the global mapping table."""
-    with ui.dialog() as dialog, ui.card().classes("w-[720px]"):
+    with tracked_dialog(state, refresh_all) as dialog, ui.card().classes("w-[720px]"):
         ui.label("Load mapping table").classes("text-base font-semibold")
         ui.label(
             "Upload CSV/TSV. Comment lines starting with '#' will be ignored. "
@@ -1128,7 +1286,7 @@ def _confirm_remove_project(state: RunState, refresh_all):
     if not pid:
         return
 
-    with ui.dialog() as dlg, ui.card():
+    with tracked_dialog(state, refresh_all) as dlg, ui.card():
         ui.label(f"Remove project '{pid}'?").classes("font-semibold")
         ##ui.label("This will remove the project and all its lane assignments.").classes("text-sm")
         ui.label("This will remove the project from the Projects Panel.").classes("text-sm")
@@ -1594,3 +1752,5 @@ def build_main_view(state: RunState) -> None:
 
     # Initial render
     refresh_all()
+    ui.timer(max(1, int(state.shared_catalog_poll_seconds)), lambda: _background_refresh_shared_catalog(state, refresh_all))
+    ui.timer(1.0, lambda: _flush_pending_project_refresh(state, refresh_all))

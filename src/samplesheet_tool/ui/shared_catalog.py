@@ -99,6 +99,7 @@ def load_shared_catalog(shared_dir: Path | None) -> SharedCatalog:
             if not project.project_id:
                 continue
             catalog.projects[project.project_id] = project
+            catalog.project_updated_at[project.project_id] = str(data.get("updated_at", "") or "")
 
     catalog.last_loaded_at = _utc_now_iso()
     return catalog
