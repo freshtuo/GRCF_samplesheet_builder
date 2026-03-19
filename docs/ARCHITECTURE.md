@@ -111,6 +111,7 @@ This stores each user's local planning state and avoids collisions between colla
 ### 4.2 Dialog-Based Views (modal)
 
 - **Settings dialog**: edits runtime (flowcell, lanes, capacity, read lengths, output_dir, shared_catalog_dir, user_name)
+  - On Windows web sessions, folder paths are entered manually; native Tk folder pickers are disabled because they can block the NiceGUI connection.
 - **Summary dialog**: aggregated view of current assignments (run/project/sample levels)
 
 ### 4.3 Validation Mechanism (not a panel)

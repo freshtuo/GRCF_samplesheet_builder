@@ -212,6 +212,7 @@ Changing settings:
 Notes:
 - All collaborating users should set the same `Shared Catalog Folder`.
 - If you switch to a different shared folder, copy `indexes.json` and the `projects/` folder there if you want to keep the existing shared data.
+- On Windows web sessions, type or paste Output/Shared folder paths manually. Native folder pickers are intentionally disabled there because they can interrupt the web UI connection.
 
 Settings are saved to:
 ```text

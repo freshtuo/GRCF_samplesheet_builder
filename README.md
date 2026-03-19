@@ -98,6 +98,7 @@ Notes:
 - If you change the shared catalog folder, copy existing shared files to the new location if you want to keep using them.
 - The app polls the shared catalog in the background. Index updates are applied quietly in memory; project changes trigger a safe UI refresh when no modal dialog is open.
 - If shared catalog access fails, the app can continue using the last loaded in-memory snapshot and will show a warning banner.
+- On Windows web sessions, enter Output/Shared folder paths manually in Settings. Native Tk folder pickers are disabled there because they can interrupt the browser connection.
 
 Exports are written to the local `outputs/` directory unless changed in Settings.
 ## 🐞 Reporting Issues
