@@ -343,6 +343,11 @@ def open_settings_dialog(state: RunState, refresh_all):
         max_plans=state.max_plans,
     )
 
+    chosen_paths = {
+        "output_dir": str(state.output_dir),
+        "shared_catalog_dir": str(state.shared_catalog_dir) if state.shared_catalog_dir else "",
+    }
+
     with tracked_dialog(state, refresh_all) as dialog, ui.card().classes("w-[760px] max-w-full"):
         ui.label("Runtime Settings").classes("text-lg font-bold")
 
@@ -375,17 +380,31 @@ def open_settings_dialog(state: RunState, refresh_all):
         # base dir: display only
         base_input = ui.input("Base Folder", value=str(state.base_dir)).classes("w-full").props("readonly")
 
+        def _set_input_value(widget, value: str) -> None:
+            """Keep NiceGUI input widgets and dialog-local state in sync."""
+            if hasattr(widget, "set_value"):
+                widget.set_value(value)
+            else:
+                widget.value = value
+                widget.update()
+
         with ui.row().classes("w-full gap-3 items-end no-wrap"):
             output_input = ui.input("Output Folder", value=str(state.output_dir)).classes("grow")
+            output_input.on_value_change(
+                lambda e: chosen_paths.__setitem__("output_dir", (e.value or "").strip())
+            )
 
             def choose_output_folder():
+                state.ui_modal_open = True
                 root = Tk()
                 root.withdraw()
                 folder = filedialog.askdirectory()
                 root.destroy()
+                # Native folder pickers can transiently hide the web dialog; keep modal protection active.
+                state.ui_modal_open = True
                 if folder:
-                    output_input.value = folder
-                    output_input.update()
+                    chosen_paths["output_dir"] = folder
+                    _set_input_value(output_input, folder)
 
             panel_btn(ui.button("Choose Output Folder", on_click=choose_output_folder)).classes("shrink-0")
 
@@ -395,15 +414,21 @@ def open_settings_dialog(state: RunState, refresh_all):
                 value=cfg.shared_catalog_dir or "",
                 placeholder=r"Example: Z:\grcf_samplesheet_catalog or \\server\labshare\grcf_samplesheet_catalog",
             ).classes("grow")
+            shared_input.on_value_change(
+                lambda e: chosen_paths.__setitem__("shared_catalog_dir", (e.value or "").strip())
+            )
 
             def choose_shared_folder():
+                state.ui_modal_open = True
                 root = Tk()
                 root.withdraw()
                 folder = filedialog.askdirectory()
                 root.destroy()
+                # Native folder pickers can transiently hide the web dialog; keep modal protection active.
+                state.ui_modal_open = True
                 if folder:
-                    shared_input.value = folder
-                    shared_input.update()
+                    chosen_paths["shared_catalog_dir"] = folder
+                    _set_input_value(shared_input, folder)
 
             panel_btn(ui.button("Choose Shared Folder", on_click=choose_shared_folder)).classes("shrink-0")
 
@@ -434,11 +459,11 @@ def open_settings_dialog(state: RunState, refresh_all):
                 state.read2_len = int(r2_input.value)
                 state.max_plans = int(max_plans_input.value)
                 state.user_name = (user_input.value or "").strip()
-                shared_raw = (shared_input.value or "").strip()
+                shared_raw = chosen_paths["shared_catalog_dir"]
                 state.shared_catalog_dir = Path(shared_raw) if shared_raw else None
 
                 # apply output dir to state
-                raw = (output_input.value or "").strip()
+                raw = chosen_paths["output_dir"]
                 try:
                     if raw:
                         p = Path(raw)
