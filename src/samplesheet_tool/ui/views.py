@@ -162,6 +162,21 @@ def _on_dialog_hide(state: RunState) -> None:
     state.ui_modal_open = False
 
 
+def _run_safe_ui_background_task(state: RunState, refresh_all, fn, label: str) -> None:
+    """Run a background UI callback defensively so unexpected errors do not break the session."""
+    try:
+        fn()
+    except Exception as e:
+        warning = f"{label} failed: {e}"
+        if state.startup_warning != warning:
+            state.startup_warning = warning
+            if not state.ui_modal_open:
+                refresh_all()
+            else:
+                state.pending_ui_redraw = True
+        print(warning)
+
+
 def _background_refresh_shared_catalog(state: RunState, refresh_all) -> None:
     """Poll the shared catalog and apply quiet or deferred updates as needed."""
     if state.shared_catalog_dir is None:
@@ -370,6 +385,7 @@ def open_settings_dialog(state: RunState, refresh_all):
                 root.destroy()
                 if folder:
                     output_input.value = folder
+                    output_input.update()
 
             panel_btn(ui.button("Choose Output Folder", on_click=choose_output_folder)).classes("shrink-0")
 
@@ -387,6 +403,7 @@ def open_settings_dialog(state: RunState, refresh_all):
                 root.destroy()
                 if folder:
                     shared_input.value = folder
+                    shared_input.update()
 
             panel_btn(ui.button("Choose Shared Folder", on_click=choose_shared_folder)).classes("shrink-0")
 
@@ -1752,5 +1769,21 @@ def build_main_view(state: RunState) -> None:
 
     # Initial render
     refresh_all()
-    ui.timer(max(1, int(state.shared_catalog_poll_seconds)), lambda: _background_refresh_shared_catalog(state, refresh_all))
-    ui.timer(1.0, lambda: _flush_pending_project_refresh(state, refresh_all))
+    ui.timer(
+        max(1, int(state.shared_catalog_poll_seconds)),
+        lambda: _run_safe_ui_background_task(
+            state,
+            refresh_all,
+            lambda: _background_refresh_shared_catalog(state, refresh_all),
+            "Shared catalog background refresh",
+        ),
+    )
+    ui.timer(
+        1.0,
+        lambda: _run_safe_ui_background_task(
+            state,
+            refresh_all,
+            lambda: _flush_pending_project_refresh(state, refresh_all),
+            "Deferred UI refresh",
+        ),
+    )
