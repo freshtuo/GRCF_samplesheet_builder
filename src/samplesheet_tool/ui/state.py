@@ -318,6 +318,8 @@ class RunState:
     startup_warning: Optional[str] = None
     # True while a modal dialog is open; used to defer disruptive background redraws
     ui_modal_open: bool = False
+    # True while a native Tk folder picker is open; prevents transient dialog-hide side effects
+    native_picker_open: bool = False
     # Generic "redraw later" flag for banner/status-only UI changes detected during a modal
     pending_ui_redraw: bool = False
     # True when shared project data changed and the UI refresh must wait until dialogs close

@@ -159,6 +159,8 @@ def tracked_dialog(state: RunState, refresh_all):
 
 def _on_dialog_hide(state: RunState) -> None:
     """Mark dialogs closed so deferred refresh can be flushed by the background timer."""
+    if state.native_picker_open:
+        return
     state.ui_modal_open = False
 
 
@@ -396,10 +398,12 @@ def open_settings_dialog(state: RunState, refresh_all):
 
             def choose_output_folder():
                 state.ui_modal_open = True
+                state.native_picker_open = True
                 root = Tk()
                 root.withdraw()
                 folder = filedialog.askdirectory()
                 root.destroy()
+                state.native_picker_open = False
                 # Native folder pickers can transiently hide the web dialog; keep modal protection active.
                 state.ui_modal_open = True
                 if folder:
@@ -420,10 +424,12 @@ def open_settings_dialog(state: RunState, refresh_all):
 
             def choose_shared_folder():
                 state.ui_modal_open = True
+                state.native_picker_open = True
                 root = Tk()
                 root.withdraw()
                 folder = filedialog.askdirectory()
                 root.destroy()
+                state.native_picker_open = False
                 # Native folder pickers can transiently hide the web dialog; keep modal protection active.
                 state.ui_modal_open = True
                 if folder:
