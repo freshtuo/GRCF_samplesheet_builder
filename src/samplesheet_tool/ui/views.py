@@ -350,7 +350,7 @@ def open_settings_dialog(state: RunState, refresh_all):
         "shared_catalog_dir": str(state.shared_catalog_dir) if state.shared_catalog_dir else "",
     }
 
-    with tracked_dialog(state, refresh_all) as dialog, ui.card().classes("w-[760px] max-w-full"):
+    with ui.dialog() as dialog, ui.card().classes("w-[760px] max-w-full"):
         ui.label("Runtime Settings").classes("text-lg font-bold")
 
         ui.separator()
@@ -390,6 +390,12 @@ def open_settings_dialog(state: RunState, refresh_all):
                 widget.value = value
                 widget.update()
 
+        def _close_settings_dialog() -> None:
+            """Close the settings dialog and release the modal-open guard explicitly."""
+            state.ui_modal_open = False
+            state.native_picker_open = False
+            dialog.close()
+
         with ui.row().classes("w-full gap-3 items-end no-wrap"):
             output_input = ui.input("Output Folder", value=str(state.output_dir)).classes("grow")
             output_input.on_value_change(
@@ -401,6 +407,12 @@ def open_settings_dialog(state: RunState, refresh_all):
                 state.native_picker_open = True
                 root = Tk()
                 root.withdraw()
+                try:
+                    root.attributes("-topmost", True)
+                    root.lift()
+                    root.focus_force()
+                except Exception:
+                    pass
                 folder = filedialog.askdirectory()
                 root.destroy()
                 state.native_picker_open = False
@@ -427,6 +439,12 @@ def open_settings_dialog(state: RunState, refresh_all):
                 state.native_picker_open = True
                 root = Tk()
                 root.withdraw()
+                try:
+                    root.attributes("-topmost", True)
+                    root.lift()
+                    root.focus_force()
+                except Exception:
+                    pass
                 folder = filedialog.askdirectory()
                 root.destroy()
                 state.native_picker_open = False
@@ -454,7 +472,7 @@ def open_settings_dialog(state: RunState, refresh_all):
             r2_input = ui.number("Read2 Length", value=cfg.read2_len).classes("flex-1")
 
         with ui.row().classes("justify-end w-full"):
-            panel_btn(ui.button("Cancel", on_click=dialog.close))
+            panel_btn(ui.button("Cancel", on_click=_close_settings_dialog))
 
             def on_save():
                 # update state
@@ -525,10 +543,11 @@ def open_settings_dialog(state: RunState, refresh_all):
                 # refresh UI
                 refresh_all()
 
-                dialog.close()
+                _close_settings_dialog()
 
             panel_btn(ui.button("Save", on_click=on_save))
 
+        state.ui_modal_open = True
         dialog.open()
 
 def build_toolbar(state: RunState, refresh_all) -> None:
