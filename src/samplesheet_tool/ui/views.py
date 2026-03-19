@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import inspect
+import platform
 from nicegui import ui
 from typing import List, Dict, Any, Optional
 from pathlib import Path
@@ -20,6 +21,8 @@ from samplesheet_tool.ui import actions
 from samplesheet_tool.ui.shared_catalog import load_shared_catalog, shared_project_path
 from samplesheet_tool.ui.runtime_config import RuntimeConfig, save_runtime_config, FLOWCELL_PRESETS
 from samplesheet_tool.ui import __version__
+
+WINDOWS_WEB_FOLDER_PICKER_UNSUPPORTED = platform.system() == "Windows"
 
 # -------------------------
 # small helpers
@@ -396,6 +399,26 @@ def open_settings_dialog(state: RunState, refresh_all):
             state.native_picker_open = False
             dialog.close()
 
+        def _pick_folder() -> str:
+            """Open the native folder chooser when it is supported for this web session."""
+            state.ui_modal_open = True
+            state.native_picker_open = True
+            root = Tk()
+            root.withdraw()
+            try:
+                root.attributes("-topmost", True)
+                root.lift()
+                root.focus_force()
+            except Exception:
+                pass
+            try:
+                return filedialog.askdirectory() or ""
+            finally:
+                root.destroy()
+                state.native_picker_open = False
+                # Native folder pickers can transiently hide the web dialog; keep modal protection active.
+                state.ui_modal_open = True
+
         with ui.row().classes("w-full gap-3 items-end no-wrap"):
             output_input = ui.input("Output Folder", value=str(state.output_dir)).classes("grow")
             output_input.on_value_change(
@@ -403,26 +426,18 @@ def open_settings_dialog(state: RunState, refresh_all):
             )
 
             def choose_output_folder():
-                state.ui_modal_open = True
-                state.native_picker_open = True
-                root = Tk()
-                root.withdraw()
-                try:
-                    root.attributes("-topmost", True)
-                    root.lift()
-                    root.focus_force()
-                except Exception:
-                    pass
-                folder = filedialog.askdirectory()
-                root.destroy()
-                state.native_picker_open = False
-                # Native folder pickers can transiently hide the web dialog; keep modal protection active.
-                state.ui_modal_open = True
+                folder = _pick_folder()
                 if folder:
                     chosen_paths["output_dir"] = folder
                     _set_input_value(output_input, folder)
 
-            panel_btn(ui.button("Choose Output Folder", on_click=choose_output_folder)).classes("shrink-0")
+            choose_output_btn = ui.button("Choose Output Folder", on_click=choose_output_folder)
+            panel_btn(choose_output_btn).classes("shrink-0")
+            if WINDOWS_WEB_FOLDER_PICKER_UNSUPPORTED:
+                choose_output_btn.props("disable")
+                choose_output_btn.tooltip(
+                    "Disabled on Windows web sessions. Type or paste the folder path instead."
+                )
 
         with ui.row().classes("w-full gap-3 items-end no-wrap"):
             shared_input = ui.input(
@@ -435,26 +450,23 @@ def open_settings_dialog(state: RunState, refresh_all):
             )
 
             def choose_shared_folder():
-                state.ui_modal_open = True
-                state.native_picker_open = True
-                root = Tk()
-                root.withdraw()
-                try:
-                    root.attributes("-topmost", True)
-                    root.lift()
-                    root.focus_force()
-                except Exception:
-                    pass
-                folder = filedialog.askdirectory()
-                root.destroy()
-                state.native_picker_open = False
-                # Native folder pickers can transiently hide the web dialog; keep modal protection active.
-                state.ui_modal_open = True
+                folder = _pick_folder()
                 if folder:
                     chosen_paths["shared_catalog_dir"] = folder
                     _set_input_value(shared_input, folder)
 
-            panel_btn(ui.button("Choose Shared Folder", on_click=choose_shared_folder)).classes("shrink-0")
+            choose_shared_btn = ui.button("Choose Shared Folder", on_click=choose_shared_folder)
+            panel_btn(choose_shared_btn).classes("shrink-0")
+            if WINDOWS_WEB_FOLDER_PICKER_UNSUPPORTED:
+                choose_shared_btn.props("disable")
+                choose_shared_btn.tooltip(
+                    "Disabled on Windows web sessions. Type or paste the folder path instead."
+                )
+
+        if WINDOWS_WEB_FOLDER_PICKER_UNSUPPORTED:
+            ui.label(
+                "On Windows, please paste folder paths manually. Native folder pickers can interrupt the web app connection."
+            ).classes("text-sm text-amber-700")
 
         with ui.row().classes("w-full gap-3 items-end no-wrap"):
             user_input = ui.input(
