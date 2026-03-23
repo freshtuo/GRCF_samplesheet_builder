@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from typing import List, Optional, Iterable, Set, Dict, Tuple
+from uuid import uuid4
 from nicegui import ui
 from pathlib import Path
 
@@ -15,15 +16,17 @@ import pandas as pd
 from samplesheet_tool.ui.state import (
     RunState, 
     LaneStatus, PlanIntegrityError, 
-    Project, 
+    Project, IndexSet, IndexSets,
     Message, MessageLevel, 
     ValidationResult, 
-    IndexMappingType, 
+    IndexMappingType, IndexTables,
     SampleSheetRow, BaseSpaceRenderer, IEMRenderer, 
     save_plan, default_store_dir, 
     make_sample_uid, split_sample_uid, 
 )
 from samplesheet_tool.ui.shared_catalog import (
+    build_flattened_index_tables,
+    utc_now_iso,
     delete_shared_project,
     load_shared_catalog,
     save_shared_indexes,
@@ -72,6 +75,96 @@ def clear_messages(state: RunState, *, source: Optional[str] = None) -> None:
         return
     state.messages = [m for m in state.messages if m.source != source]
 
+
+def _copy_index_sets(index_sets: IndexSets) -> IndexSets:
+    """Create a detached copy so index updates can be validated before commit."""
+    def _copy_one(item: IndexSet) -> IndexSet:
+        return IndexSet(
+            set_id=item.set_id,
+            name=item.name,
+            rows=[dict(row) for row in item.rows],
+            uploaded_at=item.uploaded_at,
+            uploaded_by=item.uploaded_by,
+        )
+
+    return IndexSets(
+        dual=[_copy_one(item) for item in index_sets.dual],
+        single=[_copy_one(item) for item in index_sets.single],
+    )
+
+
+def _apply_catalog_snapshot(state: RunState, catalog) -> None:
+    """Replace the in-memory shared catalog snapshot and normalize dependent selection state."""
+    state.catalog = catalog
+    state.ensure_valid_project_selection()
+    state.ensure_valid_index_set_selection()
+
+
+def _build_index_set_rows(
+    mapping_type: IndexMappingType,
+    filename: str,
+    header: List[str],
+    lines: List[str],
+    delimiter: str,
+) -> Optional[List[Dict[str, str]]]:
+    """Parse uploaded mapping-table lines into normalized rows for one IndexSet.
+
+    Validates required values and rejects conflicting duplicate index_id
+    entries within the uploaded file before any shared state is updated.
+    """
+    def idx_of(col: str) -> int:
+        return header.index(col) if col in header else -1
+
+    required = ["index_id", "i7", "i5"] if mapping_type == "dual" else ["index_id", "sequence"]
+    missing = [c for c in required if idx_of(c) < 0]
+    if missing:
+        return None
+
+    parsed_by_id: Dict[str, Dict[str, str]] = {}
+    for ln_no, ln in enumerate(lines[1:], start=2):
+        parts = [p.strip() for p in ln.split(delimiter)]
+        if len(parts) < len(header):
+            raise ValueError(f"Index import failed ({filename}): line {ln_no} has too few columns")
+
+        index_id = parts[idx_of("index_id")]
+        if not index_id:
+            raise ValueError(f"Index import failed ({filename}): line {ln_no} missing index_id")
+
+        if mapping_type == "dual":
+            row = {
+                "index_id": index_id,
+                "i7": parts[idx_of("i7")],
+                "i5": parts[idx_of("i5")],
+            }
+            if not row["i7"] or not row["i5"]:
+                raise ValueError(f"Index import failed ({filename}): line {ln_no} missing i7/i5")
+        else:
+            row = {
+                "index_id": index_id,
+                "sequence": parts[idx_of("sequence")],
+            }
+            if not row["sequence"]:
+                raise ValueError(f"Index import failed ({filename}): line {ln_no} missing sequence")
+
+        existing = parsed_by_id.get(index_id)
+        if existing and existing != row:
+            raise ValueError(
+                f"Index import failed ({filename}): index_id '{index_id}' appears multiple times with different mappings"
+            )
+        parsed_by_id[index_id] = row
+
+    return list(parsed_by_id.values())
+
+
+def _all_index_set_names(index_sets: IndexSets) -> Set[str]:
+    """Return the set of imported index set names across both mapping types."""
+    return {
+        item.name
+        for item in [*index_sets.dual, *index_sets.single]
+        if item.name
+    }
+
+
 # -------------------------
 # Index mapping import (mock, but follows spec rules)
 # -------------------------
@@ -81,41 +174,44 @@ def import_mapping_table_from_text(
     mapping_type: IndexMappingType, 
     raw_text: str,
     *,
+    set_name: str,
     filename: str = "(uploaded)", 
     delimiter: Optional[str] = None,
 ) -> bool:
-    """Import a mapping table from uploaded text.
-
-    Atomic per-file (spec-compliant):
-      - duplicate index_id with same sequences -> WARNING, keep existing
-      - duplicate index_id with different sequences -> ERROR, do NOT merge anything
-      - format/required columns errors -> ERROR, do NOT merge anything
-
-    MVP parsing: CSV/TSV with a header row.
-      - dual: index_id, i7, i5
-      - single: index_id, sequence
-    """
-    # Keep messages persistent, but clear previous index-import messages to reduce noise during iterative testing.
+    """Import one named index set, then rebuild the flattened lookup tables atomically."""
+    # Start each import from a clean index-import message slate.
     clear_messages(state, source="index_import")
+
+    # Validate the user-supplied set name before touching any shared state.
+    clean_name = (set_name or "").strip()
+    if not clean_name:
+        push_message(state, "error", "Index import failed: set name is required", source="index_import")
+        ui.notify("Index set name is required.", type="negative")
+        return False
 
     text = (raw_text or "").strip()
     if not text:
         push_message(state, "error", f"Index import failed: empty file ({filename})", source="index_import")
         return False
 
-    # Infer delimiter
+    # Fall back to a simple TSV-vs-CSV guess if the caller did not pass a delimiter.
     if delimiter is None:
         first = text.splitlines()[0]
         delimiter = "\t" if "\t" in first else ","
 
+    # Parse the uploaded file into normalized rows for one index set.
     lines = [ln for ln in text.splitlines() if ln.strip()]
     header = [h.strip() for h in lines[0].split(delimiter)]
 
-    def idx_of(col: str) -> int:
-        return header.index(col) if col in header else -1
+    try:
+        parsed_rows = _build_index_set_rows(mapping_type, filename, header, lines, delimiter)
+    except ValueError as e:
+        push_message(state, "error", str(e), source="index_import")
+        ui.notify("Index import failed. See Messages.", type="negative")
+        return False
 
     required = ["index_id", "i7", "i5"] if mapping_type == "dual" else ["index_id", "sequence"]
-    missing = [c for c in required if idx_of(c) < 0]
+    missing = [c for c in required if c not in header]
     if missing:
         push_message(
             state,
@@ -125,88 +221,56 @@ def import_mapping_table_from_text(
         )
         return False
 
-    # Parse rows
-    parsed: List[Tuple[str, Dict[str, str]]] = []
-    for ln_no, ln in enumerate(lines[1:], start=2):
-        parts = [p.strip() for p in ln.split(delimiter)]
-        if len(parts) < len(header):
-            push_message(state, "error", f"Index import failed ({filename}): line {ln_no} has too few columns", source="index_import")
-            return False
-
-        index_id = parts[idx_of("index_id")]
-        if not index_id:
-            push_message(state, "error", f"Index import failed ({filename}): line {ln_no} missing index_id", source="index_import")
-            return False
-
-        if mapping_type == "dual":
-            i7 = parts[idx_of("i7")]
-            i5 = parts[idx_of("i5")]
-            if not i7 or not i5:
-                push_message(state, "error", f"Index import failed ({filename}): line {ln_no} missing i7/i5", source="index_import")
-                return False
-            parsed.append((index_id, {"i7": i7, "i5": i5}))
-        else:
-            seq = parts[idx_of("sequence")]
-            if not seq:
-                push_message(state, "error", f"Index import failed ({filename}): line {ln_no} missing sequence", source="index_import")
-                return False
-            parsed.append((index_id, {"sequence": seq}))
-
-    # Validate conflicts BEFORE mutating state (atomic)
-    if mapping_type == "dual":
-        existing = state.catalog.index_tables.dual
-        for index_id, rec in parsed:
-            if index_id in existing and existing[index_id] != rec:
-                push_message(
-                    state,
-                    "error",
-                    f"Index import failed ({filename}): index_id '{index_id}' conflicts with existing mapping",
-                    source="index_import",
-                )
-                ui.notify("Index import failed: conflicting index ID found. See Messages.", type="negative")
-                return False
+    # Always work from the latest shared snapshot when possible so import/remove stays atomic.
+    if state.shared_catalog_dir is None:
+        working_catalog = state.catalog
     else:
-        existing = state.catalog.index_tables.single
-        for index_id, rec in parsed:
-            seq = rec["sequence"]
-            if index_id in existing and existing[index_id] != seq:
-                push_message(
-                    state,
-                    "error",
-                    f"Index import failed ({filename}): index_id '{index_id}' conflicts with existing mapping",
-                    source="index_import",
-                )
-                ui.notify("Index import failed: conflicting index ID found. See Messages.", type="negative")
-                return False
+        try:
+            working_catalog = load_shared_catalog(state.shared_catalog_dir)
+        except PermissionError:
+            push_message(
+                state,
+                "warning",
+                "No permission to read the shared catalog; imported indexes are available only in this session.",
+                source="index_import",
+            )
+            working_catalog = state.catalog
 
-    # Merge
-    dup_n = 0
-    add_n = 0
-    if mapping_type == "dual":
-        for index_id, rec in parsed:
-            if index_id in state.catalog.index_tables.dual:
-                dup_n += 1
-                continue
-            state.catalog.index_tables.dual[index_id] = rec
-            add_n += 1
-    else:
-        for index_id, rec in parsed:
-            seq = rec["sequence"]
-            if index_id in state.catalog.index_tables.single:
-                dup_n += 1
-                continue
-            state.catalog.index_tables.single[index_id] = seq
-            add_n += 1
-
-    if dup_n:
+    # Build the candidate next state on a detached copy; only commit after validation succeeds.
+    next_sets = _copy_index_sets(working_catalog.index_sets)
+    if clean_name in _all_index_set_names(next_sets):
         push_message(
             state,
-            "warning",
-            f"Index import warning ({filename}): {dup_n} duplicate ID(s) already present (kept existing)",
+            "error",
+            f"Index import failed ({filename}): index set name '{clean_name}' already exists",
             source="index_import",
         )
+        ui.notify("Index set name already exists. Choose a different name.", type="negative")
+        return False
 
+    new_set = IndexSet(
+        set_id=uuid4().hex,
+        name=clean_name,
+        rows=parsed_rows,
+        uploaded_at=utc_now_iso(),
+        uploaded_by=state.user_name or None,
+    )
+    getattr(next_sets, mapping_type).append(new_set)
+
+    # Rebuild the flattened lookup tables to catch cross-set conflicts before saving.
+    try:
+        next_tables = build_flattened_index_tables(next_sets)
+    except ValueError as e:
+        push_message(state, "error", f"Index import failed ({filename}): {e}", source="index_import")
+        ui.notify("Index import failed: conflicting index ID found. See Messages.", type="negative")
+        return False
+
+    working_catalog.index_sets = next_sets
+    working_catalog.index_tables = next_tables
+
+    # Persist the new snapshot when shared storage is configured; otherwise keep it in session only.
     if state.shared_catalog_dir is None:
+        _apply_catalog_snapshot(state, working_catalog)
         push_message(
             state,
             "warning",
@@ -221,10 +285,13 @@ def import_mapping_table_from_text(
         try:
             save_shared_indexes(
                 state.shared_catalog_dir,
-                state.catalog.index_tables,
+                working_catalog.index_sets,
+                working_catalog.index_tables,
                 user_name=state.user_name or None,
             )
+            _apply_catalog_snapshot(state, load_shared_catalog(state.shared_catalog_dir))
         except PermissionError:
+            _apply_catalog_snapshot(state, working_catalog)
             push_message(
                 state,
                 "warning",
@@ -236,7 +303,58 @@ def import_mapping_table_from_text(
                 type="warning",
             )
 
-    ui.notify(f"Loaded mapping table: +{add_n} IDs ({mapping_type})", type="positive")
+    # Persist the local UI plan after the index catalog update succeeds.
+    save_plan(state)
+    ui.notify(f"Loaded index set '{clean_name}': +{len(parsed_rows)} IDs ({mapping_type})", type="positive")
+    return True
+
+
+def remove_index_set(state: RunState, mapping_type: IndexMappingType, set_id: str) -> bool:
+    """Remove one imported index set and rebuild the flattened lookup tables."""
+    if not set_id:
+        return False
+
+    if state.shared_catalog_dir is None:
+        working_catalog = state.catalog
+    else:
+        try:
+            working_catalog = load_shared_catalog(state.shared_catalog_dir)
+        except PermissionError as e:
+            ui.notify(f"No permission to read shared indexes: {e}", type="negative")
+            return False
+
+    next_sets = _copy_index_sets(working_catalog.index_sets)
+    current_sets = getattr(next_sets, mapping_type)
+    removed_set = next((item for item in current_sets if item.set_id == set_id), None)
+    if removed_set is None:
+        if state.shared_catalog_dir is not None:
+            _apply_catalog_snapshot(state, working_catalog)
+            save_plan(state)
+        ui.notify("That index set was already removed. Refreshed local view.", type="warning")
+        return False
+
+    setattr(next_sets, mapping_type, [item for item in current_sets if item.set_id != set_id])
+    next_tables = build_flattened_index_tables(next_sets)
+    working_catalog.index_sets = next_sets
+    working_catalog.index_tables = next_tables
+
+    if state.shared_catalog_dir is None:
+        _apply_catalog_snapshot(state, working_catalog)
+    else:
+        try:
+            save_shared_indexes(
+                state.shared_catalog_dir,
+                working_catalog.index_sets,
+                working_catalog.index_tables,
+                user_name=state.user_name or None,
+            )
+            _apply_catalog_snapshot(state, load_shared_catalog(state.shared_catalog_dir))
+        except PermissionError as e:
+            ui.notify(f"No permission to write shared indexes: {e}", type="negative")
+            return False
+
+    save_plan(state)
+    ui.notify(f"Removed index set '{removed_set.name}'.", type="positive")
     return True
 
 
@@ -284,13 +402,14 @@ def import_project(
             proj,
             user_name=state.user_name or None,
         )
+        state.catalog = load_shared_catalog(state.shared_catalog_dir)
     except PermissionError as e:
         raise PermissionError(
             f"No permission to write project files in shared catalog: {e}"
         ) from e
-    state.catalog.projects[project_id] = proj
     state.selected_project_id = project_id
     state.ensure_valid_project_selection()
+    state.ensure_valid_index_set_selection()
 
     save_plan(state)
     
@@ -329,6 +448,7 @@ def remove_project(state: RunState, project_id: str) -> None:
             )
             return
         state.ensure_valid_project_selection()
+        state.ensure_valid_index_set_selection()
         ui.notify(
             f"Project '{project_id}' was already removed from the shared catalog. Refreshed local view.",
             type="warning",
@@ -336,8 +456,9 @@ def remove_project(state: RunState, project_id: str) -> None:
         save_plan(state)
         return
 
-    del state.catalog.projects[project_id]
+    state.catalog = load_shared_catalog(state.shared_catalog_dir)
     state.ensure_valid_project_selection()
+    state.ensure_valid_index_set_selection()
 
     save_plan(state)
 
@@ -353,6 +474,7 @@ def refresh_shared_catalog(state: RunState) -> None:
             f"No permission to read the shared catalog folder: {e}"
         ) from e
     state.ensure_valid_project_selection()
+    state.ensure_valid_index_set_selection()
 
 
 # -------------------------

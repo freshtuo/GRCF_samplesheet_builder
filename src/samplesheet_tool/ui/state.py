@@ -92,11 +92,30 @@ class IndexTables:
 
 
 @dataclass
+class IndexSet:
+    """One imported index set stored as the source-of-truth in the shared catalog."""
+    set_id: str
+    name: str
+    rows: List[Dict[str, str]] = field(default_factory=list)
+    uploaded_at: Optional[str] = None
+    uploaded_by: Optional[str] = None
+
+
+@dataclass
+class IndexSets:
+    """Imported index sets grouped by mapping type."""
+    dual: List[IndexSet] = field(default_factory=list)
+    single: List[IndexSet] = field(default_factory=list)
+
+
+@dataclass
 class SharedCatalog:
     """Shared indexes and shared projects loaded from the team folder."""
+    index_sets: IndexSets = field(default_factory=IndexSets)
     index_tables: IndexTables = field(default_factory=IndexTables)
     projects: Dict[str, "Project"] = field(default_factory=dict)
     project_updated_at: Dict[str, str] = field(default_factory=dict)
+    project_updated_by: Dict[str, str] = field(default_factory=dict)
     last_loaded_at: Optional[str] = None
     indexes_updated_at: Optional[str] = None
     indexes_updated_by: Optional[str] = None
@@ -307,6 +326,9 @@ class RunState:
     catalog: SharedCatalog = field(default_factory=SharedCatalog)
     indexes_panel_collapsed: bool = True
     indexes_mapping_type: IndexMappingType = "dual" # dropdown selection in Indexes Panel
+    selected_index_set_type: IndexMappingType = "dual"
+    selected_index_set_id: Optional[str] = None
+    manage_index_table_style_injected: bool = False
 
     # Messages panel (Errors/Warnings only; persistent)
     messages: List[Message] = field(default_factory=list)
@@ -427,12 +449,24 @@ class RunState:
             self.selected_project_id = project_ids[0] if project_ids else None
             self.selected_sample_uids.clear()
 
+    def ensure_valid_index_set_selection(self) -> None:
+        """Keep the selected imported index set valid after refresh/import/remove operations."""
+        set_type = self.selected_index_set_type if self.selected_index_set_type in {"dual", "single"} else "dual"
+        self.selected_index_set_type = set_type
+        sets = getattr(self.catalog.index_sets, set_type)
+        valid_ids = [item.set_id for item in sets]
+        if self.selected_index_set_id not in valid_ids:
+            self.selected_index_set_id = valid_ids[0] if valid_ids else None
+
     # ---------- persistence ----------
     def to_dict(self) -> dict:
         """Serialize the plan-owned state to a JSON-friendly dictionary."""
         return {
             "indexes_panel_collapsed": self.indexes_panel_collapsed,
             "indexes_mapping_type": self.indexes_mapping_type,
+            "selected_index_set_type": self.selected_index_set_type,
+            "selected_index_set_id": self.selected_index_set_id,
+            "manage_index_table_style_injected": self.manage_index_table_style_injected,
             "messages": [asdict(m) for m in self.messages], 
             "selected_project_id": self.selected_project_id,
             "lanes": {str(lid): asdict(l) for lid, l in self.lanes.items()},
@@ -460,6 +494,9 @@ class RunState:
         # indexes panel state
         rs.indexes_panel_collapsed = bool(d.get("indexes_panel_collapsed", True))
         rs.indexes_mapping_type = d.get("indexes_mapping_type", "dual")
+        rs.selected_index_set_type = d.get("selected_index_set_type", "dual")
+        rs.selected_index_set_id = d.get("selected_index_set_id")
+        rs.manage_index_table_style_injected = bool(d.get("manage_index_table_style_injected", False))
 
         # messages
         rs.messages = [Message(**m) for m in (d.get("messages") or [])]
@@ -511,6 +548,7 @@ class RunState:
         # validation_result (no serializaion)
         rs.validation_result = None
         rs.ensure_valid_project_selection()
+        rs.ensure_valid_index_set_selection()
         
         return rs
 

@@ -8,12 +8,12 @@ from typing import Any
 from uuid import uuid4
 import re
 
-from samplesheet_tool.ui.state import IndexTables, Project, Sample, SharedCatalog
+from samplesheet_tool.ui.state import IndexSet, IndexSets, IndexTables, Project, Sample, SharedCatalog
 
 
-def _utc_now_iso() -> str:
+def utc_now_iso() -> str:
     """Return a compact UTC timestamp for shared catalog metadata."""
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def shared_indexes_path(shared_dir: Path) -> Path:
@@ -59,7 +59,7 @@ def atomic_write_json(path: Path, payload: Any, *, user_name: str | None = None)
 def _project_to_payload(project: Project, *, user_name: str | None = None) -> dict[str, Any]:
     """Serialize a Project plus shared-catalog metadata fields."""
     payload = asdict(project)
-    payload["updated_at"] = _utc_now_iso()
+    payload["updated_at"] = utc_now_iso()
     if user_name:
         payload["updated_by"] = user_name
     return payload
@@ -77,6 +77,55 @@ def _project_from_payload(data: dict[str, Any]) -> Project:
     )
 
 
+def build_flattened_index_tables(index_sets: IndexSets) -> IndexTables:
+    """Flatten imported index sets into the lookup tables used by the rest of the app."""
+    tables = IndexTables()
+
+    for index_set in index_sets.dual:
+        for row in index_set.rows:
+            index_id = str(row.get("index_id", "")).strip()
+            rec = {
+                "i7": str(row.get("i7", "")).strip(),
+                "i5": str(row.get("i5", "")).strip(),
+            }
+            if not index_id:
+                continue
+            existing = tables.dual.get(index_id)
+            if existing and existing != rec:
+                raise ValueError(
+                    f"Conflicting dual mapping for index_id '{index_id}' across imported index sets"
+                )
+            tables.dual[index_id] = rec
+
+    for index_set in index_sets.single:
+        for row in index_set.rows:
+            index_id = str(row.get("index_id", "")).strip()
+            seq = str(row.get("sequence", "")).strip()
+            if not index_id:
+                continue
+            existing = tables.single.get(index_id)
+            if existing and existing != seq:
+                raise ValueError(
+                    f"Conflicting single mapping for index_id '{index_id}' across imported index sets"
+                )
+            tables.single[index_id] = seq
+
+    return tables
+
+
+def _index_set_from_payload(data: dict[str, Any]) -> IndexSet:
+    """Build an IndexSet from JSON payload."""
+    rows = data.get("rows") or []
+    clean_rows = [dict(row) for row in rows if isinstance(row, dict)]
+    return IndexSet(
+        set_id=str(data.get("set_id", "")).strip(),
+        name=str(data.get("name", "")).strip(),
+        rows=clean_rows,
+        uploaded_at=data.get("uploaded_at"),
+        uploaded_by=data.get("uploaded_by"),
+    )
+
+
 def load_shared_catalog(shared_dir: Path | None) -> SharedCatalog:
     """Load shared indexes and project files from the configured shared directory."""
     catalog = SharedCatalog()
@@ -86,8 +135,25 @@ def load_shared_catalog(shared_dir: Path | None) -> SharedCatalog:
     indexes_path = shared_indexes_path(shared_dir)
     if indexes_path.exists():
         data = read_json_file(indexes_path)
-        catalog.index_tables.dual = dict(data.get("dual", {}))
-        catalog.index_tables.single = dict(data.get("single", {}))
+        raw_sets = data.get("index_sets") or {}
+        catalog.index_sets.dual = [
+            _index_set_from_payload(item)
+            for item in raw_sets.get("dual", [])
+            if isinstance(item, dict)
+        ]
+        catalog.index_sets.single = [
+            _index_set_from_payload(item)
+            for item in raw_sets.get("single", [])
+            if isinstance(item, dict)
+        ]
+
+        raw_flattened = data.get("flattened_indexes") or {}
+        if raw_flattened:
+            catalog.index_tables.dual = dict(raw_flattened.get("dual", {}))
+            catalog.index_tables.single = dict(raw_flattened.get("single", {}))
+        else:
+            catalog.index_tables = build_flattened_index_tables(catalog.index_sets)
+
         catalog.indexes_updated_at = data.get("updated_at")
         catalog.indexes_updated_by = data.get("updated_by")
 
@@ -100,22 +166,30 @@ def load_shared_catalog(shared_dir: Path | None) -> SharedCatalog:
                 continue
             catalog.projects[project.project_id] = project
             catalog.project_updated_at[project.project_id] = str(data.get("updated_at", "") or "")
+            catalog.project_updated_by[project.project_id] = str(data.get("updated_by", "") or "")
 
-    catalog.last_loaded_at = _utc_now_iso()
+    catalog.last_loaded_at = utc_now_iso()
     return catalog
 
 
 def save_shared_indexes(
     shared_dir: Path,
+    index_sets: IndexSets,
     index_tables: IndexTables,
     *,
     user_name: str | None = None,
 ) -> Path:
-    """Persist the merged shared index tables to indexes.json."""
+    """Persist imported index sets plus flattened lookup tables to indexes.json."""
     payload: dict[str, Any] = {
-        "updated_at": _utc_now_iso(),
-        "dual": index_tables.dual,
-        "single": index_tables.single,
+        "updated_at": utc_now_iso(),
+        "index_sets": {
+            "dual": [asdict(item) for item in index_sets.dual],
+            "single": [asdict(item) for item in index_sets.single],
+        },
+        "flattened_indexes": {
+            "dual": index_tables.dual,
+            "single": index_tables.single,
+        },
     }
     if user_name:
         payload["updated_by"] = user_name

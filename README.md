@@ -8,9 +8,9 @@ Designed for structured lane planning, validation, reproducible run configuratio
 
 - Configure sequencing run settings (flowcell, lanes, read length)
 
-- Share indexes and imported projects across 2-3 users through a shared folder
+- Share imported index sets and projects across 2-3 users through a shared folder
 
-- Automatically detect shared catalog updates in the background and refresh project UI when needed
+- Automatically detect shared catalog updates in the background and refresh index/project UI when needed
 
 - Import project sample metadata
 
@@ -51,6 +51,16 @@ source venv/bin/activate
 ```bash
 pip install .
 ```
+
+### Upgrade Note
+If you are installing a new version over an older local setup, remove old local UI config files before starting the app when formats are not backward compatible.
+
+Typical files to remove are:
+- `~/.samplesheet_tool_ui/config.json`
+- `~/.samplesheet_tool_ui/index_preset.json` if you still have that legacy file from an older version
+
+This lets the app rebuild fresh local settings for the new version.
+
 ## 🖥 Run the Application
 ```bash
 python -m samplesheet_tool.ui
@@ -95,6 +105,8 @@ Shared catalog folder configured in the Settings dialog:
 Notes:
 - `config.json`, plans, temp files, outputs, lane assignments, and validation state stay local per user.
 - `indexes.json` and `projects/*.json` are shared across users.
+- `indexes.json` now stores imported `index_sets` plus `flattened_indexes` used for auto-fill.
+- Importing an index table requires a unique index set name; users can later inspect and remove one imported set at a time from the Indexes panel.
 - If you change the shared catalog folder, copy existing shared files to the new location if you want to keep using them.
 - The app polls the shared catalog in the background. Index updates are applied quietly in memory; project changes trigger a safe UI refresh when no modal dialog is open.
 - If shared catalog access fails, the app can continue using the last loaded in-memory snapshot and will show a warning banner.

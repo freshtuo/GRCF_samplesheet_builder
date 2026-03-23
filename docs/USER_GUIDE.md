@@ -10,7 +10,7 @@ SampleSheet Tool is a UI-based sequencing planning system that allows you to:
 
 - Configure run environment (flowcell, lanes, read length)
 
-- Share indexes and imported projects through a shared folder
+- Share imported index sets and projects through a shared folder
 
 - Import index mapping tables (dual or single)
 
@@ -58,12 +58,20 @@ The layout has:
 These are not dialogs — they are permanent parts of the layout.
 
 ### 🧩 3.1 Index Panel
-Used to manage index mapping tables.
+Used to manage shared imported index sets.
 
 Indexes are shared through the configured shared catalog folder, so other users can see them after refreshing.
 The app also checks for shared catalog changes in the background.
 
 **Import Mapping Table**
+
+When importing an index table, you must provide:
+- Mapping type (`dual` or `single`)
+- A unique index set name
+- Column-role mapping for the uploaded file
+
+Each import becomes one named index set in shared `indexes.json`.
+The app then rebuilds the flattened shared lookup tables used during project import and auto-fill.
 
 You can import index tables in two mapping modes:
 
@@ -102,6 +110,18 @@ This is used when:
 
 This “single vs dual mapping” refers to index table structure —
 it is NOT the same as sequencing type.
+
+**Manage Index Sets**
+
+The Indexes panel also includes a `Manage Index Sets` dialog.
+There you can:
+- switch between `dual` and `single` imported sets
+- inspect one imported set at a time
+- view uploader, upload time, and row count
+- remove one imported set if it was added by mistake
+
+Removing an index set rebuilds the shared flattened lookup tables automatically.
+If another user already removed the same set, the app refreshes and shows a warning instead of failing.
 
 ### 📁 3.2 Projects Panel
 
@@ -289,6 +309,7 @@ Use the `Refresh Shared` toolbar button when you want to force an immediate relo
 Refresh behavior:
 - reloads shared `indexes.json`
 - reloads shared `projects/*.json`
+- refreshes imported index sets and flattened index lookups
 - keeps your local lane assignments unchanged
 - if your selected project was deleted, the app selects the first available project
 

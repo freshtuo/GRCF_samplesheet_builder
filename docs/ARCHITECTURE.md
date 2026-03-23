@@ -93,8 +93,217 @@ This stores each user's local planning state and avoids collisions between colla
 - local `plans/*.json`: runtime + assignments + local UI state
 - `temp/`: upload/import scratch space; safe to clear
 - `outputs/`: final deliverables
-- shared `indexes.json`: shared index mappings
+- shared `indexes.json`: shared imported index sets plus flattened lookup tables
 - shared `projects/*.json`: one shared project per file
+
+### 3.5 Shared Index JSON Shape
+
+`indexes.json` is the shared source-of-truth for indexes.
+It stores both the imported set-level data and the flattened lookup tables used by the rest of the app.
+
+Top-level fields:
+- `updated_at`
+- `updated_by`
+- `index_sets.dual`
+- `index_sets.single`
+- `flattened_indexes.dual`
+- `flattened_indexes.single`
+
+Each imported index set stores:
+- `set_id`: stable internal identifier used for remove actions
+- `name`: user-provided unique set name
+- `rows`: the original imported rows for that set
+- `uploaded_at`
+- `uploaded_by`
+
+Example:
+
+```json
+{
+  "updated_at": "2026-03-23T18:42:10Z",
+  "updated_by": "alice",
+  "index_sets": {
+    "dual": [
+      {
+        "set_id": "9a4d3d24df8f4e8ca9d8f3d1d2a7b6c1",
+        "name": "GRCF_dual_march2026",
+        "rows": [
+          {
+            "index_id": "D701",
+            "i7": "ATTACTCG",
+            "i5": "TATAGCCT"
+          },
+          {
+            "index_id": "D702",
+            "i7": "TCCGGAGA",
+            "i5": "ATAGAGGC"
+          }
+        ],
+        "uploaded_at": "2026-03-23T18:42:10Z",
+        "uploaded_by": "alice"
+      }
+    ],
+    "single": [
+      {
+        "set_id": "1b9e91f17a0c4eb7b9f0a1e4d5c6f789",
+        "name": "GRCF_single_test",
+        "rows": [
+          {
+            "index_id": "S501",
+            "sequence": "TATAGCCT"
+          },
+          {
+            "index_id": "S502",
+            "sequence": "ATAGAGGC"
+          }
+        ],
+        "uploaded_at": "2026-03-23T18:50:02Z",
+        "uploaded_by": "bob"
+      }
+    ]
+  },
+  "flattened_indexes": {
+    "dual": {
+      "D701": {
+        "i7": "ATTACTCG",
+        "i5": "TATAGCCT"
+      },
+      "D702": {
+        "i7": "TCCGGAGA",
+        "i5": "ATAGAGGC"
+      }
+    },
+    "single": {
+      "S501": "TATAGCCT",
+      "S502": "ATAGAGGC"
+    }
+  }
+}
+```
+
+### 3.6 Shared Project JSON Shape
+
+Each shared project lives in its own file under `projects/`.
+It stores the imported sample metadata plus shared save metadata.
+
+Top-level fields:
+- `project_id`
+- `samples`
+- `library_type`
+- `index_type`
+- `sequencing_type`
+- `updated_at`
+- `updated_by`
+
+Example:
+
+```json
+{
+  "project_id": "PROJECT_A",
+  "samples": [
+    {
+      "sample_id": "SAMPLE_001",
+      "project_id": "PROJECT_A",
+      "i7_id": "D701",
+      "i7_seq": "ATTACTCG",
+      "i5_id": "D501",
+      "i5_seq": "TATAGCCT",
+      "required_reads_m": 50
+    },
+    {
+      "sample_id": "SAMPLE_002",
+      "project_id": "PROJECT_A",
+      "i7_id": "D702",
+      "i7_seq": "TCCGGAGA",
+      "i5_id": "D502",
+      "i5_seq": "ATAGAGGC",
+      "required_reads_m": 75
+    }
+  ],
+  "library_type": "Amplicon",
+  "index_type": "dual",
+  "sequencing_type": "PE101",
+  "updated_at": "2026-03-23T19:05:11.123456Z",
+  "updated_by": "alice"
+}
+```
+
+### 3.7 Local Plan JSON Shape
+
+A saved plan is local-only and stores the current planning snapshot, not the shared catalog contents.
+It keeps enough UI state to restore the planning session consistently.
+
+Top-level fields:
+- `indexes_panel_collapsed`
+- `indexes_mapping_type`
+- `selected_index_set_type`
+- `selected_index_set_id`
+- `selected_project_id`
+- `messages`
+- `lanes`
+- `assignments`
+- `runtime`
+
+Example:
+
+```json
+{
+  "indexes_panel_collapsed": true,
+  "indexes_mapping_type": "dual",
+  "selected_index_set_type": "dual",
+  "selected_index_set_id": "9a4d3d24df8f4e8ca9d8f3d1d2a7b6c1",
+  "selected_project_id": "PROJECT_A",
+  "messages": [
+    {
+      "level": "warning",
+      "text": "Lane 1 is near capacity",
+      "source": "lane_validation",
+      "lane": 1,
+      "project_id": null,
+      "sample_id": null,
+      "ts": "2026-03-23 15:07:42"
+    }
+  ],
+  "lanes": {
+    "1": {
+      "lane_id": 1,
+      "sample_uids": ["PROJECT_A::SAMPLE_001"],
+      "project_ids": ["PROJECT_A"],
+      "status": "warning",
+      "headline": "Near capacity",
+      "details": ["Used reads are close to lane capacity"]
+    }
+  },
+  "selected_sample_uids": ["PROJECT_A::SAMPLE_001"],
+  "samples_rows_per_page": 50,
+  "assignments": {
+    "PROJECT_A::SAMPLE_001": {
+      "1": 50
+    }
+  },
+  "runtime": {
+    "flowcell_type": "10B",
+    "n_lanes": 8,
+    "lane_capacity_m": 1250,
+    "read1_len": 101,
+    "read2_len": 101
+  }
+}
+```
+
+### 3.8 In-memory Shared Catalog Shape
+
+`RunState.catalog` is the in-memory representation of the shared catalog and combines both index and project data.
+It is not persisted directly as one file, but it is the structure views and actions work with at runtime.
+
+Key fields:
+- `index_sets`
+- `index_tables`
+- `projects`
+- `project_updated_at`
+- `indexes_updated_at`
+- `indexes_updated_by`
+- `last_loaded_at`
 
 ---
 
@@ -102,7 +311,7 @@ This stores each user's local planning state and avoids collisions between colla
 
 ### 4.1 Persistent Panels (always visible)
 
-- **Index Panel**: import/manage index tables; used to fill missing indexes during project import
+- **Index Panel**: import/manage named index sets; flattened lookup tables are rebuilt for project auto-fill
 - **Project Panel**: view/import/remove shared projects (removal does not auto-remove local lane assignments)
 - **Sample Panel**: shows samples for selected project; inspect indexes/reads/etc.
 - **Lane Panel**: assign/remove projects/samples to lanes; shows lane status indicator
@@ -129,7 +338,9 @@ Validation is a background logic system that:
 ### 5.1 Import
 
 ```markdown
-Shared indexes
+Shared imported index sets
+        ↓
+Build flattened shared index lookups
         ↓
 Project import (CSV)
 
@@ -256,12 +467,33 @@ If another user deleted the same project already:
 - keep local lane assignments unchanged
 - report missing shared project during validation/export if still referenced
 
-### 7.3 Load Plan Restores Runtime
+### 7.3 Index Set Import and Removal
+
+Importing an index table:
+- requires a unique user-facing set name
+- stores one `IndexSet` under `index_sets.single` or `index_sets.dual`
+- rebuilds `flattened_indexes`
+- atomically rewrites shared `indexes.json`
+
+Removing an index set:
+- targets the stable `set_id`, not the display name
+- reloads the latest shared `indexes.json`
+- removes the chosen set if it still exists
+- rebuilds `flattened_indexes`
+- atomically rewrites shared `indexes.json`
+
+Conflict rules:
+- same `index_id` with identical mapping across sets is allowed
+- same `index_id` with different mapping across sets is rejected
+- importing the same set name twice is rejected
+- removing an already-removed set becomes a refresh/warning case, not a crash
+
+### 7.4 Load Plan Restores Runtime
 
 `load_plan` restores runtime snapshot (flowcell/lanes/capacity/read lengths) before restoring assignments.
 This prevents mismatch (e.g. 8-lane plan loaded under 2-lane runtime).
 
-### 7.4 Read Length Changes
+### 7.5 Read Length Changes
 
 Read lengths are runtime. If changed after assignments:
 
@@ -271,7 +503,7 @@ Read lengths are runtime. If changed after assignments:
 
 ---
 
-### 7.5 Collaboration Model
+### 7.6 Collaboration Model
 
 Collaboration is intentionally simple:
 - 2-3 users point the app to the same `shared_catalog_dir`

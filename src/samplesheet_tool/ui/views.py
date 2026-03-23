@@ -105,6 +105,39 @@ def _project_signature(state: RunState) -> tuple[tuple[str, str], ...]:
     )
 
 
+def _project_changes_authored_by_current_user(
+    state: RunState,
+    new_catalog,
+    old_sig: tuple[tuple[str, str], ...],
+    new_sig: tuple[tuple[str, str], ...],
+) -> bool:
+    """Return True when all detected shared-project changes were written by the current user."""
+    current_user = (state.user_name or "").strip()
+    if not current_user:
+        return False
+
+    old_map = dict(old_sig)
+    new_map = dict(new_sig)
+    added_ids = set(new_map) - set(old_map)
+    removed_ids = set(old_map) - set(new_map)
+    changed_ids = {
+        pid for pid in (set(old_map) & set(new_map))
+        if old_map[pid] != new_map[pid]
+    }
+    if not added_ids and not removed_ids and not changed_ids:
+        return False
+
+    added_or_changed_by_user = all(
+        (new_catalog.project_updated_by.get(pid, "") or "").strip() == current_user
+        for pid in (added_ids | changed_ids)
+    )
+    removed_by_user = all(
+        (state.catalog.project_updated_by.get(pid, "") or "").strip() == current_user
+        for pid in removed_ids
+    )
+    return added_or_changed_by_user and removed_by_user
+
+
 def _format_project_refresh_notice(
     old_sig: tuple[tuple[str, str], ...],
     new_sig: tuple[tuple[str, str], ...],
@@ -241,22 +274,30 @@ def _background_refresh_shared_catalog(state: RunState, refresh_all) -> None:
     state.catalog.last_loaded_at = new_catalog.last_loaded_at
 
     if project_changed:
+        authored_by_current_user = _project_changes_authored_by_current_user(state, new_catalog, old_project_sig, new_project_sig)
         state.catalog = new_catalog
         notice = _format_project_refresh_notice(old_project_sig, new_project_sig)
         if state.ui_modal_open:
-            state.pending_project_refresh = True
-            state.pending_project_refresh_notice = notice
+            if not authored_by_current_user:
+                state.pending_project_refresh = True
+                state.pending_project_refresh_notice = notice
+                return
+            state.pending_ui_redraw = True
             return
         state.ensure_valid_project_selection()
-        ui.notify(notice, type="warning")
+        state.ensure_valid_index_set_selection()
+        if not authored_by_current_user:
+            ui.notify(notice, type="warning")
         refresh_all()
         return
 
     if index_changed:
+        state.catalog.index_sets = new_catalog.index_sets
         state.catalog.index_tables = new_catalog.index_tables
         state.catalog.indexes_updated_at = new_catalog.indexes_updated_at
         state.catalog.indexes_updated_by = new_catalog.indexes_updated_by
         state.catalog.last_loaded_at = new_catalog.last_loaded_at
+        state.ensure_valid_index_set_selection()
         if warning_cleared and not state.ui_modal_open:
             refresh_all()
         elif warning_cleared:
@@ -1079,7 +1120,7 @@ def _do_export_confirm(state: RunState, out_dir: str, prefix: str, fmt: str, dia
 # -------------------------
 
 def import_mapping_dialog(state: RunState, refresh_all) -> None:
-    """Upload a mapping table (CSV/TSV) and merge into the global mapping table."""
+    """Upload a mapping table (CSV/TSV) as one named imported index set."""
     with tracked_dialog(state, refresh_all) as dialog, ui.card().classes("w-[720px]"):
         ui.label("Load mapping table").classes("text-base font-semibold")
         ui.label(
@@ -1088,37 +1129,29 @@ def import_mapping_dialog(state: RunState, refresh_all) -> None:
         ).classes("text-xs text-gray-500")
 
         mapping_type = ui.select(
-            options=["dual","single"],
+            options=["dual", "single"],
             value=state.indexes_mapping_type,
             label="Mapping type",
         ).classes("w-full")
+        set_name = ui.input("Index set name (required)").classes("w-full")
 
         content_preview = ui.textarea("File preview (comments removed)", placeholder="(upload a file)").props("readonly").classes("w-full")
-        filename_label = ui.label("").classes("text-xs text-gray-500")
-
-        # simple UI-local buffer
+        # UI-local buffers for the uploaded file content and selected column roles.
         file_buf: Dict[str, Any] = {"text": "", "name": "", "cols": [], "delimiter": ","}
-
-        # column role selections
         col_id = {"v": None}
-        col_i7 = {"v": None} # i7 for dual, sequence for single
+        col_i7 = {"v": None}
         col_i5 = {"v": None}
 
-        ui.separator()
-
-        # ---- column mapping UI (options will be filled after upload) ----
-        ui.label("Column mapping").classes("text-subtitle2")
+        ui.label("Column mapping").classes("text-subtitle2 mt-2")
 
         id_sel = ui.select(options=[], label="Index ID column").classes("w-full")
         seq_sel = ui.select(options=[], label="i7 / sequence column").classes("w-full")
         i5_sel = ui.select(options=[], label="i5 sequence column").classes("w-full")
 
-        # register handlers
         id_sel.on_value_change(lambda e: col_id.__setitem__("v", e.value))
         seq_sel.on_value_change(lambda e: col_i7.__setitem__("v", e.value))
         i5_sel.on_value_change(lambda e: col_i5.__setitem__("v", e.value))
 
-        # show/hide i5 selector based on mapping type
         def _sync_i5_visibility():
             i5_sel.set_visibility(mapping_type.value == "dual")
 
@@ -1126,36 +1159,26 @@ def import_mapping_dialog(state: RunState, refresh_all) -> None:
         _sync_i5_visibility()
 
         async def on_upload(e):
+            # Read the uploaded file, drop comment lines, and populate the column selectors.
             out = e.file.read()
             data = await out if inspect.isawaitable(out) else out
             raw = data.decode("utf-8", errors="replace")
 
             file_buf["name"] = getattr(e, "name", None) or "(uploaded)"
             name_lower = file_buf["name"].lower()
-
-            # determine delimiter from filename
-            if name_lower.endswith(".tsv") or name_lower.endswith(".txt"):
-                delimiter = "\t"
-            else:
-                delimiter = ","
+            delimiter = "\t" if name_lower.endswith(".tsv") or name_lower.endswith(".txt") else ","
             file_buf["delimiter"] = delimiter
 
-            # remove comment lines (start with '#', after stripping)
             lines = raw.splitlines()
             lines = [ln for ln in lines if not ln.lstrip().startswith('#')]
-
             if not lines:
-                ui.notify('No data lines found after removing comments', type='negative')
+                ui.notify("No data lines found after removing comments", type="negative")
                 return
 
-            clean_text = '\n'.join(lines)
-            file_buf['text'] = clean_text
-
-            # parse header columns
+            file_buf["text"] = "\n".join(lines)
             header = [h.strip() for h in lines[0].split(delimiter)]
             file_buf["cols"] = header
-            
-            # reset selections
+
             col_id["v"] = None
             col_i7["v"] = None
             col_i5["v"] = None
@@ -1163,7 +1186,6 @@ def import_mapping_dialog(state: RunState, refresh_all) -> None:
             seq_sel.value = None
             i5_sel.value = None
 
-            # update select options
             id_sel.options = header
             seq_sel.options = header
             i5_sel.options = header
@@ -1171,26 +1193,21 @@ def import_mapping_dialog(state: RunState, refresh_all) -> None:
             seq_sel.update()
             i5_sel.update()
 
-            filename_label.text = f"Selected: {file_buf['name']}"
             content_preview.value = "\n".join(lines[:20])
 
         ui.upload(on_upload=on_upload, auto_upload=True, multiple=False).props("accept=.csv,.tsv,.txt")
-
-        ui.separator()
 
         with ui.row().classes("justify-end gap-2"):
             panel_btn(ui.button("Cancel", on_click=dialog.close))
             panel_btn(ui.button("Load", on_click=lambda: _do()))
 
         def _do():
+            # Validate UI selections, normalize the header names, then hand off to the action layer.
             if not file_buf["text"]:
                 ui.notify("Please upload a file", type="warning")
                 return
 
-            # persist mapping type choice
             state.indexes_mapping_type = mapping_type.value or state.indexes_mapping_type
-
-            # validate column mapping
             if not col_id["v"] or not col_i7["v"]:
                 ui.notify("Please select required columns", type="negative")
                 return
@@ -1199,82 +1216,214 @@ def import_mapping_dialog(state: RunState, refresh_all) -> None:
                 return
 
             selected = [col_id["v"], col_i7["v"]]
-            if state.indexes_mapping_type== "dual":
+            if state.indexes_mapping_type == "dual":
                 selected.append(col_i5["v"])
             if len(set(selected)) != len(selected):
                 ui.notify("Each role must map to a different column", type="negative")
                 return
 
-            # rewrite header to internal standard
             lines = file_buf["text"].splitlines()
             delimiter = file_buf["delimiter"]
-
             header = [h.strip() for h in lines[0].split(delimiter)]
-
             rename = {
                 col_id["v"]: "index_id",
-                col_i7["v"]: "i7" if state.indexes_mapping_type == "dual" else "sequence"
+                col_i7["v"]: "i7" if state.indexes_mapping_type == "dual" else "sequence",
             }
             if state.indexes_mapping_type == "dual":
                 rename[col_i5["v"]] = "i5"
 
-            new_header = [rename.get(h,h) for h in header]
-            lines[0] = delimiter.join(new_header)
+            lines[0] = delimiter.join([rename.get(h, h) for h in header])
             normalized_text = "\n".join(lines)
 
+            # The action layer stores one named index set, rebuilds flattened lookups, and saves atomically.
             ok = actions.import_mapping_table_from_text(
                 state,
                 state.indexes_mapping_type,
                 normalized_text,
+                set_name=set_name.value or "",
                 filename=file_buf["name"],
-                delimiter=delimiter
+                delimiter=delimiter,
             )
 
             if ok:
-                save_plan(state)
                 dialog.close()
                 refresh_all()
             else:
-                # errors already go to Messages Panel
                 ui.notify("Mapping table import failed (see Messages)", type="negative")
 
     dialog.open()
 
 
+def _find_selected_index_set(state: RunState):
+    """Return the currently selected imported index set, if any."""
+    sets = getattr(state.catalog.index_sets, state.selected_index_set_type)
+    return next((item for item in sets if item.set_id == state.selected_index_set_id), None)
+
+
+def _confirm_remove_index_set(state: RunState, refresh_all, parent_dialog) -> None:
+    """Ask the user to confirm removal of the currently selected index set."""
+    index_set = _find_selected_index_set(state)
+    if index_set is None:
+        ui.notify("Select an index set to remove.", type="warning")
+        return
+
+    with tracked_dialog(state, refresh_all) as dlg, ui.card():
+        ui.label(f"Remove index set '{index_set.name}'?").classes("font-semibold")
+        ui.label("This will remove the imported set from the shared indexes.").classes("text-sm")
+        with ui.row().classes("justify-end gap-2"):
+            panel_btn(ui.button("Cancel", on_click=dlg.close))
+            panel_btn(
+                ui.button(
+                    "Remove",
+                    on_click=lambda: _do_remove_index_set(
+                        state,
+                        state.selected_index_set_type,
+                        index_set.set_id,
+                        dlg,
+                        parent_dialog,
+                        refresh_all,
+                    ),
+                )
+            )
+    dlg.open()
+
+
+def _do_remove_index_set(state: RunState, mapping_type: str, set_id: str, dlg, parent_dialog, refresh_all) -> None:
+    """Remove the selected index set, then close the related dialogs and refresh the UI."""
+    ok = actions.remove_index_set(state, mapping_type, set_id)
+    dlg.close()
+    if ok:
+        parent_dialog.close()
+    refresh_all()
+
+
+def manage_index_sets_dialog(state: RunState, refresh_all) -> None:
+    """Open a dialog to inspect imported index sets and remove one if needed."""
+    state.ensure_valid_index_set_selection()
+    if not state.manage_index_table_style_injected:
+        ui.add_head_html("""
+        <style>
+        .manage-index-table .q-table__middle { max-height: 420px; }
+        .manage-index-table thead tr th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: #f8fafc;
+        }
+        </style>
+        """)
+        state.manage_index_table_style_injected = True
+    with tracked_dialog(state, refresh_all) as dialog, ui.card().classes("w-[980px] max-w-[96vw]"):
+        ui.label("Manage Imported Index Sets").classes("text-lg font-semibold")
+        ui.label("Review one shared index set at a time, then remove it if needed.").classes("text-sm text-gray-500")
+
+        with ui.row().classes("w-full gap-4 items-end"):
+            type_sel = ui.select(
+                options=["dual", "single"],
+                value=state.selected_index_set_type,
+                label="Mapping type",
+            ).classes("w-40")
+            set_sel = ui.select(options={}, value=None, label="Index set").classes("flex-1")
+
+        with ui.card().classes("w-full bg-slate-50 shadow-none border border-slate-200"):
+            meta_label = ui.label("").classes("text-sm text-slate-700")
+
+        with ui.element("div").classes("w-full"):
+            table = ui.table(
+                columns=[],
+                rows=[],
+                row_key="index_id",
+                pagination={"rowsPerPage": 20},
+            ).classes("w-full manage-index-table")
+            table.props("dense flat bordered square")
+            table.props('table-style="width: 100%;"')
+            table.props(':rows-per-page-options="[10,20,50,100]"')
+            table.style("white-space: nowrap; width: 100%;")
+
+        with ui.row().classes("w-full justify-end gap-2 pt-2"):
+            panel_btn(ui.button("Close", on_click=dialog.close))
+            remove_btn = panel_btn(ui.button("Remove Set", on_click=lambda: _confirm_remove_index_set(state, refresh_all, dialog)))
+
+        def _render() -> None:
+            state.selected_index_set_type = type_sel.value or state.selected_index_set_type
+            state.ensure_valid_index_set_selection()
+            sets = getattr(state.catalog.index_sets, state.selected_index_set_type)
+            options = {item.set_id: f"{item.name} ({len(item.rows)} rows)" for item in sets}
+            set_sel.options = options
+            if state.selected_index_set_id not in options:
+                state.selected_index_set_id = next(iter(options), None)
+            set_sel.value = state.selected_index_set_id
+            set_sel.update()
+
+            selected = _find_selected_index_set(state)
+            if selected is None:
+                meta_label.text = f"No imported {state.selected_index_set_type} index sets."
+                table.columns = []
+                table.rows = []
+                table.update()
+                remove_btn.disable()
+                return
+
+            remove_btn.enable()
+            uploaded_by = selected.uploaded_by or "unknown"
+            uploaded_at = selected.uploaded_at or "unknown time"
+            meta_label.text = f"Set: {selected.name} | Uploaded by: {uploaded_by} | Uploaded at: {uploaded_at} | Rows: {len(selected.rows)}"
+            if state.selected_index_set_type == "dual":
+                table.columns = [
+                    {"name": "index_id", "label": "Index ID", "field": "index_id", "sortable": True},
+                    {"name": "i7", "label": "i7 Sequence", "field": "i7", "sortable": True},
+                    {"name": "i5", "label": "i5 Sequence", "field": "i5", "sortable": True},
+                ]
+            else:
+                table.columns = [
+                    {"name": "index_id", "label": "Index ID", "field": "index_id", "sortable": True},
+                    {"name": "sequence", "label": "Sequence", "field": "sequence", "sortable": True},
+                ]
+            table.rows = [dict(row) for row in selected.rows]
+            table.update()
+
+        def _on_type_change(_):
+            state.selected_index_set_type = type_sel.value or state.selected_index_set_type
+            state.selected_index_set_id = None
+            _render()
+
+        def _on_set_change(_):
+            state.selected_index_set_id = set_sel.value
+            _render()
+
+        type_sel.on_value_change(_on_type_change)
+        set_sel.on_value_change(_on_set_change)
+        _render()
+
+    dialog.open()
+
+
 def build_indexes_panel(state: RunState, refresh_all) -> None:
+    """Render the Indexes panel summary plus import/manage entry points."""
     stats = state.catalog.index_tables.stats()
     total_n = stats["dual_ids"] + stats["single_ids"]
+    total_sets = len(state.catalog.index_sets.dual) + len(state.catalog.index_sets.single)
 
     with ui.card().classes("w-full"):
-        # --- header row ---
         header = ui.row().classes("w-full items-center justify-between")
-
-        # local open state (collapsed by default)
         opened = {"v": False}
 
         with header:
-            ui.label(f"Indexes (2 tables, {total_n} IDs)").classes("text-base font-semibold")
-
-            # triangle button on the right ◀ ▶ ▼
+            ui.label(f"Indexes ({total_sets} sets, {total_n} IDs)").classes("text-base font-semibold")
             tri = ui.button(
                 "▶", on_click=lambda: _toggle()
             ).props("flat dense").classes(
                 "text-lg font-semibold"
             ).style("min-width:28px; padding:0 6px;")
 
-        ##ui.separator()
-
-        # --- content ---
         content = ui.element("div").classes("w-full")
         content.set_visibility(False)
 
         def _toggle():
             opened["v"] = not opened["v"]
             content.set_visibility(opened["v"])
-            # shape change: ▼ when expanded, ▶ when collapsed
             tri.text = "▼" if opened["v"] else "▶"
 
-        # Put the real controls inside content
         with content:
             mapping_sel = ui.select(
                 options=["dual", "single"],
@@ -1290,12 +1439,18 @@ def build_indexes_panel(state: RunState, refresh_all) -> None:
 
             ui.separator()
 
-            panel_btn(
-                ui.button("Load mapping table…", on_click=lambda: import_mapping_dialog(state, refresh_all)),
-            ).classes("w-full")
+            with ui.row().classes("w-full gap-2"):
+                panel_btn(
+                    ui.button("Load mapping table…", on_click=lambda: import_mapping_dialog(state, refresh_all)),
+                ).classes("flex-1")
+                panel_btn(
+                    ui.button("Manage Index Sets", on_click=lambda: manage_index_sets_dialog(state, refresh_all)),
+                ).classes("flex-1")
 
-            ui.label(f"dual: {stats['dual_ids']} IDs | single: {stats['single_ids']} IDs") \
-              .classes("text-xs text-gray-500")
+            ui.label(
+                f"dual: {stats['dual_ids']} IDs in {len(state.catalog.index_sets.dual)} set(s) | "
+                f"single: {stats['single_ids']} IDs in {len(state.catalog.index_sets.single)} set(s)"
+            ).classes("text-xs text-gray-500")
 
 
 # -------------------------
@@ -1400,6 +1555,9 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
     p = state.catalog.projects[pid]
     ##ui.label(f"DEBUG samples={len(p.samples)}").classes("text-xs text-gray-500") # DEBUG
 
+    imported_by = state.catalog.project_updated_by.get(pid, "") or "unknown"
+    imported_at = state.catalog.project_updated_at.get(pid, "") or "unknown time"
+
     # get index type of the current project
     index_type = p.index_type if p else "dual"
 
@@ -1434,8 +1592,9 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
         {"name": "required_reads_m", "label": "Required Reads (M)", "field": "required_reads_m", "sortable": True},
     ]
 
-    # Table container enforces X/Y-scroll and prevents global page scroll + table fill width
-    with ui.element("div").classes("w-full").style("overflow:auto; max-height: 68vh; width: 100%;"):
+    # Table container enforces X/Y-scroll and prevents global page scroll + table fill width.
+    # The imported-by metadata is anchored in the bottom-left corner so it reads like table footer context.
+    with ui.element("div").classes("relative w-full").style("overflow:auto; max-height: 68vh; width: 100%;"):
         table = ui.table(
             columns=columns,
             rows=rows,
@@ -1449,6 +1608,10 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
         # Make the table itself width:100% too (covers some NiceGUI/Quasar combos)
         table.style("white-space: nowrap; width: 100%;")
         ##table.style("width: 100%;")
+
+        ui.label(f"Imported by: {imported_by} | Imported at: {imported_at}").classes(
+            "pointer-events-none absolute bottom-3 left-3 z-10 text-xs text-gray-500"
+        )
 
     table.props("dense")
     table.props("flat")
