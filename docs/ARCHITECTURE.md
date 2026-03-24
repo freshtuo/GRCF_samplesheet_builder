@@ -518,6 +518,56 @@ Collaboration is intentionally simple:
 
 The app does **not** implement real-time shared lane planning. It uses lightweight polling plus safe deferred redraws instead.
 
+#### What makes multi-user use safe
+
+Safety comes from separating **shared catalog data** from **local planning state**:
+- users share indexes and projects
+- users do **not** share lane assignments, local plans, validation messages, or export outputs
+- one user's planning changes do not overwrite another user's lane work
+
+Shared writes are also designed to avoid partial files:
+- shared `indexes.json` is written by saving a complete replacement file and then atomically replacing the old file
+- shared project files are written one project per file, so updating one project does not rewrite all projects
+- readers either see the old complete file or the new complete file, not a half-written JSON file
+
+Read/update behavior is intentionally conservative:
+- index set import/remove reloads the latest shared `indexes.json` before writing
+- project remove reloads the shared catalog again if the target project was already deleted
+- background polling refreshes in-memory shared state so users eventually converge to the same shared view
+- if a dialog is open, destructive full redraws are deferred until the modal flow finishes
+
+#### What we guarantee
+
+The collaboration model is designed to guarantee these properties:
+- no partial shared JSON files from normal app writes
+- no crash if another user already removed the same project or index set
+- no direct cross-user overwrite of local lane assignments, local plans, or outputs
+- no ambiguous shared index lookup: conflicting `index_id` to sequence mappings are rejected during index merge
+
+#### What we do not guarantee
+
+This is **not** a transactional multi-user database.
+In extreme timing races, users should expect last-writer-wins behavior for some shared operations.
+
+Examples:
+- if two users import different index sets at nearly the same time, the app reloads before write and uses atomic replace, but the final shared file still depends on which write lands last
+- if two users try to remove the same index set, one succeeds and the other sees a refresh/warning case instead of a crash
+- if two users edit the same shared project file independently outside the app, the app can only react to the final file that exists on disk
+- if one user removes a project that another user has already assigned locally to lanes, those local assignments remain until the second user removes or fixes them
+
+#### Expected behavior in extreme cases
+
+When race conditions happen, the expected outcome is graceful recovery rather than strict locking:
+- a user may see a shared refresh notice after another user's change
+- a remove action may become a no-op with a warning because the target is already gone
+- local lane assignments may temporarily reference a shared project that no longer exists
+- validation/export should then surface that missing-project problem clearly
+- manual `Refresh Shared` is always available if a user wants to force immediate resync
+
+Practical expectation:
+- collaboration is safe and predictable for a small group sharing indexes and projects
+- it is not intended to support high-frequency concurrent editing of the exact same shared records
+
 ---
 
 ## 8. Export Model
