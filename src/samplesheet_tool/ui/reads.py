@@ -32,7 +32,11 @@ def format_reads_m(value, digits: int = READS_DISPLAY_DIGITS) -> str:
 
 def format_fraction(value, digits: int = READS_DISPLAY_DIGITS) -> str:
     """Format a ratio as a conventional 0.xxx string."""
-    return f"{coerce_reads_m(value):.{digits}f}"
+    val = coerce_reads_m(value)
+    threshold = 10 ** (-digits)
+    if 0 < abs(val) < threshold:
+        return f"<{threshold:.{digits}f}"
+    return f"{val:.{digits}f}"
 
 
 def is_zero_reads(value, eps: float = READS_EPSILON) -> bool:

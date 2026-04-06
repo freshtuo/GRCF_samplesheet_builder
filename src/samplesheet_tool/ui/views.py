@@ -1595,8 +1595,7 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
     ]
 
     # Table container enforces X/Y-scroll and prevents global page scroll + table fill width.
-    # The imported-by metadata is anchored in the bottom-left corner so it reads like table footer context.
-    with ui.element("div").classes("relative w-full").style("overflow:auto; max-height: 68vh; width: 100%;"):
+    with ui.element("div").classes("w-full").style("overflow:auto; max-height: 68vh; width: 100%;"):
         table = ui.table(
             columns=columns,
             rows=rows,
@@ -1611,9 +1610,9 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
         table.style("white-space: nowrap; width: 100%;")
         ##table.style("width: 100%;")
 
-        ui.label(f"Imported by: {imported_by} | Imported at: {imported_at}").classes(
-            "pointer-events-none absolute bottom-3 left-3 z-10 text-xs text-gray-500"
-        )
+    ui.label(f"Imported by: {imported_by} | Imported at: {imported_at}").classes(
+        "mt-2 text-xs text-gray-500"
+    )
 
     table.props("dense")
     table.props("flat")
@@ -1757,7 +1756,7 @@ def build_lane_panel(state: RunState, refresh_all) -> None:
                     ui.linear_progress(
                         value=min(pct, 1.0),
                         color="red" if pct >= 1.0 else "primary",
-                    ).classes("w-16")
+                    ).props("show-value=false").classes("w-16")
 
                     ui.label(format_fraction(pct)).classes("text-xs text-gray-500 tabular-nums")
 
