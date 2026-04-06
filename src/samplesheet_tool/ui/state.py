@@ -17,6 +17,7 @@ from collections import defaultdict
 
 from samplesheet_tool.utils import Problem
 from samplesheet_tool.ui.runtime_config import default_config
+from samplesheet_tool.ui.reads import coerce_reads_m
 
 
 SAMPLE_UID_SEP = "::"
@@ -133,7 +134,7 @@ class Sample:
     i5_seq: Optional[str] = None
 
     # required reads per sample (M)
-    required_reads_m: Optional[int] = None
+    required_reads_m: Optional[float] = None
 
 
 @dataclass
@@ -150,7 +151,7 @@ class Project:
         return len(self.samples)
 
     @property
-    def total_required_reads_m(self) -> Optional[int]:
+    def total_required_reads_m(self) -> Optional[float]:
         """
         Calculate the total number of required reads for this project 
         i.e. sum required reads across all samples
@@ -357,7 +358,7 @@ class RunState:
 
     # Assignment table
     # assignments[sample_uid][lane_id] = planned_reads_m
-    assignments: Dict[str, Dict[int, int]] = field(default_factory=dict)
+    assignments: Dict[str, Dict[int, float]] = field(default_factory=dict)
 
     # Run level error
     has_run_level_error: bool = False
@@ -473,7 +474,7 @@ class RunState:
             "samples_rows_per_page": self.samples_rows_per_page,
             "selected_sample_uids": self.selected_sample_uids,
             "assignments": {
-                uid: {str(lid): int(v) for lid, v in per_lane.items()} for uid, per_lane in (self.assignments or {}).items()
+                uid: {str(lid): coerce_reads_m(v) for lid, v in per_lane.items()} for uid, per_lane in (self.assignments or {}).items()
             },
             # save runtime info as part of plan (needed when recovering a plan)
             "runtime": {
@@ -534,7 +535,7 @@ class RunState:
         rs.assignments = {}
         raw_asn = d.get("assignments") or {}
         for uid, per_lane in raw_asn.items():
-            rs.assignments[uid] = {int(lid): int(v) for lid, v in (per_lane or {}).items()}
+            rs.assignments[uid] = {int(lid): coerce_reads_m(v) for lid, v in (per_lane or {}).items()}
         # for the sake of safety
         # if assignments exist, rebuild lane.sample_uids/project_ids from assignments (gold truth)
         # to avoid future bugs that may be introduced by e.g. update assignments while forgot to update lanes

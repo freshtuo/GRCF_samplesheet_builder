@@ -34,6 +34,7 @@ from samplesheet_tool.ui.shared_catalog import (
 )
 
 from samplesheet_tool.ui.project_io import import_project_from_file
+from samplesheet_tool.ui.reads import coerce_reads_m, display_reads_m, format_reads_m, is_zero_reads
 
 from samplesheet_tool.config import (
     COL_LANE, COL_SAMPLE_ID, COL_PROJECT_ID, COL_I7_ID, COL_I5_ID, COL_I7, COL_I5
@@ -370,7 +371,7 @@ def import_project(
     library_type: Optional[str],
     sequencing_type: Optional[str], 
     file_path: Path,
-    default_required_reads_m: Optional[int], 
+    default_required_reads_m: Optional[float], 
     required_reads_mode: str = "per_sample", 
 ) -> Project:
     """
@@ -606,15 +607,15 @@ def lane_local_validate(state: RunState, lane_id: int) -> None:
         state.assignments.get(uid, {}).get(lane_id, 0)
         for uid in lane.sample_uids
     )
-    cap = int(state.lane_capacity_m)
+    cap = coerce_reads_m(state.lane_capacity_m)
     if used > cap:
         lane.status = LaneStatus.ERROR
-        lane.headline = f"Reads overflow ({used} > {cap} M)"
+        lane.headline = f"Reads overflow ({format_reads_m(used)} > {format_reads_m(cap)} M)"
 
         push_message(
             state, 
             "error",
-            f"Lane {lane_id} exceeds capacity: {used} > {cap} M",
+            f"Lane {lane_id} exceeds capacity: {format_reads_m(used)} > {format_reads_m(cap)} M",
             source="lane_validation",
             lane=lane_id,
         )
@@ -633,7 +634,7 @@ def assign_samples_to_lanes(
     state: RunState,
     sample_uids: List[str],
     lane_ids: List[int],
-    planned_reads_m: int,
+    planned_reads_m: float,
 ) -> None:
     """
     Phase1:
@@ -643,10 +644,10 @@ def assign_samples_to_lanes(
     """
     if not sample_uids or not lane_ids:
         return
-    if planned_reads_m is None or int(planned_reads_m) <= 0:
+    if planned_reads_m is None or coerce_reads_m(planned_reads_m) <= 0:
         raise ValueError("planned_reads_m must be > 0")
 
-    pr = int(planned_reads_m)
+    pr = coerce_reads_m(planned_reads_m)
     for uid in sample_uids:
         state.assignments.setdefault(uid, {})
         for lid in lane_ids:
@@ -751,7 +752,7 @@ def build_sample_summary_rows(state: RunState, project_filter: str = "All"):
             continue
         sample_map.setdefault((pid, sid), {})
         for lane_id, reads in per_lane.items():
-            sample_map[(pid, sid)][lane_id] = int(reads)
+            sample_map[(pid, sid)][lane_id] = coerce_reads_m(reads)
 
     for (pid, sid), per_lane in sample_map.items():
         if project_filter != "All" and pid != project_filter:
@@ -763,12 +764,12 @@ def build_sample_summary_rows(state: RunState, project_filter: str = "All"):
         if proj:
             sample = next((s for s in proj.samples if s.sample_id == sid), None)
 
-        required = int(sample.required_reads_m) if sample and sample.required_reads_m else 0
+        required = coerce_reads_m(sample.required_reads_m) if sample and sample.required_reads_m is not None else 0.0
         allocated = sum(per_lane.values())
         raw_remaining = required - allocated
         remaining = max(raw_remaining, 0) # raw_remaining < 0 indicates no more additional reads required.
 
-        if raw_remaining == 0:
+        if is_zero_reads(raw_remaining):
             status = "OK"
         elif raw_remaining > 0:
             status = "Under"
@@ -781,9 +782,9 @@ def build_sample_summary_rows(state: RunState, project_filter: str = "All"):
             "key": f"{pid}::{sid}", 
             "project": pid,
             "sample": sid,
-            "required": required,
-            "allocated": allocated,
-            "remaining": remaining,
+            "required": display_reads_m(required),
+            "allocated": display_reads_m(allocated),
+            "remaining": display_reads_m(remaining),
             "status": status,
             "lanes": lanes,
         })
@@ -810,7 +811,7 @@ def build_assignment_detail_rows(state: RunState, project_filter: str = "All"):
                 "project": pid,
                 "sample": sid,
                 "lane": lane_id,
-                "allocated_reads": int(reads),
+                "allocated_reads": display_reads_m(reads),
             })
 
     return rows
@@ -822,7 +823,7 @@ def build_project_summary_rows(state: RunState, project_filter: str = "All"):
         n_samples / total_reads_m / lanes
     based ONLY on current plan (assignments).
     """
-    proj_reads = defaultdict(int)
+    proj_reads = defaultdict(float)
     proj_samples = defaultdict(set)
     proj_lanes = defaultdict(set)
 
@@ -833,7 +834,7 @@ def build_project_summary_rows(state: RunState, project_filter: str = "All"):
 
         proj_samples[pid].add(sid)
         for lane_id, reads in per_lane.items():
-            proj_reads[pid] += int(reads)
+            proj_reads[pid] += coerce_reads_m(reads)
             proj_lanes[pid].add(lane_id)
 
     rows = []
@@ -859,7 +860,7 @@ def build_project_summary_rows(state: RunState, project_filter: str = "All"):
             "library_type": library_type, 
             "sequencing_type": sequencing_type, 
             "n_samples": len(proj_samples[pid]),
-            "total_allocated_reads": proj_reads[pid],
+            "total_allocated_reads": display_reads_m(proj_reads[pid]),
             "lanes": ",".join(str(x) for x in sorted(proj_lanes[pid])),
         })
     return rows

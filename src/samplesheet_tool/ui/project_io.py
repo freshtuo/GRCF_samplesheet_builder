@@ -6,11 +6,11 @@ from __future__ import annotations
 
 from typing import Optional, Literal
 from pathlib import Path
-import math
 import re
 import pandas as pd
 
 from samplesheet_tool.ui.state import Project, Sample
+from samplesheet_tool.ui.reads import coerce_reads_m
 from samplesheet_tool.utils import normalize_seq
 from samplesheet_tool.config import SAMPLE_ID_ALLOWED
 
@@ -106,8 +106,8 @@ def resolve_default_required_reads_per_sample(
     *, 
     n_samples: int, 
     required_reads_mode: Literal["per_sample", "per_project"], 
-    default_required_reads_m: Optional[int], 
-) -> Optional[int]:
+    default_required_reads_m: Optional[float], 
+) -> Optional[float]:
     """
     Convert dialog input to per-sample required reads (M). 
     Keep storage uniform for downstream logic.
@@ -115,7 +115,7 @@ def resolve_default_required_reads_per_sample(
     if default_required_reads_m is None:
         return None
 
-    value = int(default_required_reads_m)
+    value = coerce_reads_m(default_required_reads_m)
     if value <= 0:
         raise ValueError("Default required reads must be > 0")
 
@@ -124,8 +124,7 @@ def resolve_default_required_reads_per_sample(
     elif required_reads_mode == "per_project":
         if n_samples <= 0:
             raise ValueError("Project file contains no samples")
-        # keep required_reads_m as int; round up so total target is not under-allocated
-        return int(math.ceil(value / n_samples))
+        return value / n_samples
     else:
         raise ValueError(f"Invalid required_reads_mode: {required_reads_mode}")
 
@@ -184,7 +183,7 @@ def import_project_from_file(
     library_type: Optional[str],
     sequencing_type: Optional[str], 
     file_path: Path,
-    default_required_reads_m: Optional[int], 
+    default_required_reads_m: Optional[float], 
     required_reads_mode: Literal["per_sample", "per_project"] = "per_sample", 
 ) -> Project:
     """Read, validate, and convert one project file into a Project object."""
@@ -282,7 +281,7 @@ def import_project_from_file(
                         raise ValueError(f"{sid}: i5 index ID '{i5_id}' not found")
 
         if "required_reads_m" in df.columns and pd.notna(r["required_reads_m"]):
-            req = int(r["required_reads_m"])
+            req = coerce_reads_m(r["required_reads_m"])
         else:
             req = default_required_reads_per_sample_m
 

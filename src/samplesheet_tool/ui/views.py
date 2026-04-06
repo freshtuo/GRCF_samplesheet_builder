@@ -18,6 +18,7 @@ from samplesheet_tool.ui.state import (
     make_sample_uid, split_sample_uid, 
 )
 from samplesheet_tool.ui import actions
+from samplesheet_tool.ui.reads import coerce_reads_m, display_reads_m, format_fraction, format_reads_m
 from samplesheet_tool.ui.shared_catalog import load_shared_catalog, shared_project_path
 from samplesheet_tool.ui.runtime_config import RuntimeConfig, save_runtime_config, FLOWCELL_PRESETS
 from samplesheet_tool.ui import __version__
@@ -307,10 +308,10 @@ def _background_refresh_shared_catalog(state: RunState, refresh_all) -> None:
 # lane reads helpers
 # -------------------------
 
-def lane_used_reads_m(state: RunState, lane_id: int) -> int:
-    total = 0
+def lane_used_reads_m(state: RunState, lane_id: int) -> float:
+    total = 0.0
     for _uid, per_lane in state.assignments.items():
-        total += int(per_lane.get(lane_id, 0))
+        total += coerce_reads_m(per_lane.get(lane_id, 0))
     return total
 
 # -------------------------
@@ -711,7 +712,8 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
         default_reads = ui.number(
             "Default required reads per sample (M)",
             value=40,
-            min=1,
+            min=0.01,
+            step=0.01,
         ).classes("w-full")
 
         required_reads_hint = ui.label(
@@ -811,7 +813,7 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
                 ui.notify("Please upload a project file", type="negative")
                 return
 
-            if default_reads.value is None or int(default_reads.value) <= 0:
+            if default_reads.value is None or coerce_reads_m(default_reads.value) <= 0:
                 ui.notify("Default required reads must be > 0", type="negative")
                 return
 
@@ -826,7 +828,7 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
                     library_type = (library_type.value or "").strip() or None,
                     sequencing_type = (sequencing_type.value or "").strip() or None, 
                     file_path = tmp_path, 
-                    default_required_reads_m = int(default_reads.value) if default_reads.value is not None else None, 
+                    default_required_reads_m = coerce_reads_m(default_reads.value) if default_reads.value is not None else None, 
                     required_reads_mode=required_reads_mode.value or "per_sample", 
                 )
             except Exception as e:
@@ -1505,7 +1507,7 @@ def build_project_panel(state: RunState, refresh_all) -> None:
     with ui.row().classes("w-full items-center gap-2"):
         ui.label(f"Samples: {p.n_samples}").classes("text-xs text-gray-600")
         if p.total_required_reads_m is not None:
-            ui.label(f"Total reads(M): {p.total_required_reads_m}").classes("text-xs text-gray-600")
+            ui.label(f"Total reads(M): {format_reads_m(p.total_required_reads_m)}").classes("text-xs text-gray-600")
 
         panel_btn(
             ui.button("Remove", on_click=lambda: _confirm_remove_project(state, refresh_all)), 
@@ -1571,7 +1573,7 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
             "i7_seq": s.i7_seq,
             "i5_id": s.i5_id,
             "i5_seq": s.i5_seq,
-            "required_reads_m": s.required_reads_m,
+            "required_reads_m": display_reads_m(s.required_reads_m) if s.required_reads_m is not None else None,
         })
     ##ui.label(f"DEBUG rows={len(rows)}").classes("text-xs text-gray-500") # DEBUG
 
@@ -1666,8 +1668,8 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
 
         planned_reads = ui.number(
             "Reads per lane (M)",
-            min=10,
-            step=10,
+            min=0.01,
+            step=0.01,
         ).classes("w-56")
 
         @invalidate_validation(state)
@@ -1683,13 +1685,13 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
             if not lane_ids:
                 ui.notify("No lanes selected", type="warning")
                 return
-            if planned_reads.value is None or int(planned_reads.value) <= 0:
+            if planned_reads.value is None or coerce_reads_m(planned_reads.value) <= 0:
                 ui.notify("Reads per lane (M) must be > 0", type="warning")
                 return
 
             # Persist changes
             try:
-                actions.assign_samples_to_lanes(state, sample_uids, lane_ids, int(planned_reads.value))
+                actions.assign_samples_to_lanes(state, sample_uids, lane_ids, coerce_reads_m(planned_reads.value))
             except Exception as e:
                 ui.notify(f"Assign failed: {e}", type="negative")
                 return
@@ -1733,7 +1735,7 @@ def build_lane_panel(state: RunState, refresh_all) -> None:
 
         with ui.card().classes("w-full mb-2"):
             used = lane_used_reads_m(state, lid)
-            capacity = state.lane_capacity_m
+            capacity = coerce_reads_m(state.lane_capacity_m)
             pct = used / capacity if capacity > 0 else 0
 
             # ---------- Line 1: status + lane + reads + progress ----------
@@ -1748,14 +1750,16 @@ def build_lane_panel(state: RunState, refresh_all) -> None:
                 with ui.row().classes("items-center gap-2 ml-auto"):
                     # text (main info)
                     ui.label(
-                        f"{used} / {capacity} M reads"
+                        f"{format_reads_m(used)} / {format_reads_m(capacity)} M reads"
                     ).classes("text-sm text-gray-700")
 
                     # progress bar (right-aligned, short)
                     ui.linear_progress(
                         value=min(pct, 1.0),
                         color="red" if pct >= 1.0 else "primary",
-                    ).props("show-value=false").classes("w-16")
+                    ).classes("w-16")
+
+                    ui.label(format_fraction(pct)).classes("text-xs text-gray-500 tabular-nums")
 
             # ---------- Line 2: projects / samples info + CLEAR LANE ----------
             with ui.row().classes("w-full items-center mt-0"):
