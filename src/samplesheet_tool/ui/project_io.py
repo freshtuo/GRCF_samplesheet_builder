@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Optional, Literal
 from pathlib import Path
 import re
@@ -13,6 +14,20 @@ from samplesheet_tool.ui.state import Project, Sample
 from samplesheet_tool.ui.reads import coerce_reads_m
 from samplesheet_tool.utils import normalize_seq
 from samplesheet_tool.config import SAMPLE_ID_ALLOWED
+
+
+@dataclass
+class ProjectImportError(Exception):
+    """Structured, user-facing import error for expected project file problems."""
+    code: str
+    summary: str
+    details: list[str] = field(default_factory=list)
+    notify_text: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        super().__init__(self.summary)
+        if self.notify_text is None:
+            self.notify_text = self.summary
 
 
 # ============================================================
@@ -68,7 +83,12 @@ def check_sample_id_schema(df: pd.DataFrame) -> None:
     """Ensure the sample_id column exists row-by-row without missing values."""
     if df["sample_id"].isna().any():
         rows = df.index[df["sample_id"].isna()].tolist()[:5]
-        raise ValueError(f"sample_id is missing at rows {rows}")
+        raise ProjectImportError(
+            code="missing_sample_id",
+            summary="Some rows are missing sample IDs.",
+            details=[f"Row {row + 1} is missing a sample ID." for row in rows],
+            notify_text="Import failed. Some rows are missing sample IDs.",
+        )
 
 
 def check_index_presence(df: pd.DataFrame, prefix: str) -> None:
@@ -82,8 +102,11 @@ def check_index_presence(df: pd.DataFrame, prefix: str) -> None:
     )
     if bad.any():
         rows = df.index[bad].tolist()[:5]
-        raise ValueError(
-            f"{prefix.upper()} index: both ID and SEQ missing (rows: {rows})"
+        raise ProjectImportError(
+            code=f"missing_{prefix}_index",
+            summary=f"Some rows are missing {prefix.upper()} index information.",
+            details=[f"Row {row + 1} is missing both {prefix.upper()} index ID and sequence." for row in rows],
+            notify_text=f"Import failed. Some rows are missing {prefix.upper()} index information.",
         )
 
 
@@ -99,7 +122,12 @@ def check_required_reads(df: pd.DataFrame) -> None:
     bad = df["required_reads_m"] < 0
     if bad.any():
         rows = df.index[bad].tolist()[:5]
-        raise ValueError(f"required_reads_m must be >= 0 (rows: {rows})")
+        raise ProjectImportError(
+            code="invalid_required_reads",
+            summary="Some required read values are negative.",
+            details=[f"Row {row + 1} has required_reads_m < 0." for row in rows],
+            notify_text="Import failed. Some required read values are negative.",
+        )
 
 
 def resolve_default_required_reads_per_sample(
@@ -117,16 +145,28 @@ def resolve_default_required_reads_per_sample(
 
     value = coerce_reads_m(default_required_reads_m)
     if value <= 0:
-        raise ValueError("Default required reads must be > 0")
+        raise ProjectImportError(
+            code="invalid_default_reads",
+            summary="Default required reads must be greater than 0.",
+            notify_text="Import failed. Default required reads must be greater than 0.",
+        )
 
     if required_reads_mode == "per_sample":
         return value
     elif required_reads_mode == "per_project":
         if n_samples <= 0:
-            raise ValueError("Project file contains no samples")
+            raise ProjectImportError(
+                code="empty_project_file",
+                summary="The uploaded project file contains no samples.",
+                notify_text="Import failed. The uploaded project file contains no samples.",
+            )
         return value / n_samples
     else:
-        raise ValueError(f"Invalid required_reads_mode: {required_reads_mode}")
+        raise ProjectImportError(
+            code="invalid_required_reads_mode",
+            summary="The selected required reads mode is not supported.",
+            notify_text="Import failed. The selected required reads mode is not supported.",
+        )
 
 
 # ============================================================
@@ -140,14 +180,29 @@ def check_sample_ids(df: pd.DataFrame) -> None:
     bad_mask = ~df["sample_id"].astype(str).str.match(pat)
     if bad_mask.any():
         bad_ids = df.loc[bad_mask, "sample_id"].astype(str).unique().tolist()
-        raise ValueError(
-            f"Invalid sample_id(s): {bad_ids[:5]} "
-            f"(allowed regex: {SAMPLE_ID_ALLOWED})"
+        examples = []
+        for sid in bad_ids[:5]:
+            bad_chars = sorted({ch for ch in sid if not re.fullmatch(r"[A-Za-z0-9._-]", ch)})
+            rendered = [repr(ch)[1:-1] if ch != " " else "space" for ch in bad_chars]
+            examples.append(f"'{sid}' contains {', '.join(rendered)}")
+        raise ProjectImportError(
+            code="invalid_sample_id",
+            summary=(
+                "Some sample IDs contain unsupported characters. "
+                "Allowed characters are letters, numbers, dot (.), underscore (_), and hyphen (-)."
+            ),
+            details=examples,
+            notify_text="Import failed. Some sample IDs contain unsupported characters.",
         )
 
     if df["sample_id"].duplicated().any():
         dups = df.loc[df["sample_id"].duplicated(), "sample_id"].unique().tolist()
-        raise ValueError(f"Duplicate sample_id within project: {dups[:5]}")
+        raise ProjectImportError(
+            code="duplicate_sample_id",
+            summary="Some sample IDs appear more than once in the uploaded project file.",
+            details=[f"Duplicate sample ID: {value!r}" for value in dups[:5]],
+            notify_text="Import failed. Some sample IDs are duplicated.",
+        )
 
 
 def check_index_seq_uniqueness(
@@ -160,14 +215,22 @@ def check_index_seq_uniqueness(
         dup = pd.Series(seqs).duplicated()
         if dup.any():
             bad = list({seqs[i] for i in dup[dup].index})
-            raise ValueError(f"Duplicate i7 index sequence detected: {bad[:5]}")
+            raise ProjectImportError(
+                code="duplicate_i7_sequence",
+                summary="Some i7 index sequences appear more than once in the uploaded project file.",
+                details=[f"Duplicate i7 sequence: {value}" for value in bad[:5]],
+                notify_text="Import failed. Some i7 index sequences are duplicated.",
+            )
     else:
         pairs = [(s.i7_seq, s.i5_seq) for s in samples]
         dup = pd.Series(pairs).duplicated()
         if dup.any():
             bad = list({pairs[i] for i in dup[dup].index})
-            raise ValueError(
-                f"Duplicate (i7,i5) index pair detected: {bad[:5]}"
+            raise ProjectImportError(
+                code="duplicate_index_pair",
+                summary="Some (i7, i5) index pairs appear more than once in the uploaded project file.",
+                details=[f"Duplicate pair: {value}" for value in bad[:5]],
+                notify_text="Import failed. Some index pairs are duplicated.",
             )
 
 
@@ -189,7 +252,11 @@ def import_project_from_file(
     """Read, validate, and convert one project file into a Project object."""
 
     if index_type not in {"single", "dual"}:
-        raise ValueError(f"Invalid index_type: {index_type}")
+        raise ProjectImportError(
+            code="invalid_index_type",
+            summary="The selected index type is not supported.",
+            notify_text="Import failed. The selected index type is not supported.",
+        )
 
     # ------------------------
     # Read & normalize
@@ -225,7 +292,13 @@ def import_project_from_file(
 
     missing = required_cols - set(df.columns)
     if missing:
-        raise ValueError(f"Missing required column(s): {sorted(missing)}")
+        missing_cols = sorted(missing)
+        raise ProjectImportError(
+            code="missing_required_columns",
+            summary="The uploaded project file is missing required columns.",
+            details=[f"Missing column: {col}" for col in missing_cols],
+            notify_text=f"Import failed. Missing required columns: {', '.join(missing_cols)}",
+        )
 
     # ------------------------
     # Pre-checks (schema / presence)
@@ -260,25 +333,45 @@ def import_project_from_file(
             if not i7_seq:
                 i7_seq = single_lookup.get(i7_id)
                 if not i7_seq:
-                    raise ValueError(f"{sid}: i7 index ID '{i7_id}' not found")
+                    raise ProjectImportError(
+                        code="missing_i7_lookup",
+                        summary="Some index IDs in the uploaded project file were not found in the loaded index tables.",
+                        details=[f"Sample '{sid}' uses unknown i7 index ID {i7_id!r}."],
+                        notify_text="Import failed. Some index IDs were not found in the loaded index tables.",
+                    )
         else: # dual index
             if i7_seq and i5_seq: # both sequences explicitly provided, keep them, do nothing
                 pass
             elif i7_id and i5_id and i7_id == i5_id: # paired lookup
                 pair = dual_lookup.get(i7_id)
                 if not pair:
-                    raise ValueError(f"{sid}: paired index ID '{i7_id}' not found")
+                    raise ProjectImportError(
+                        code="missing_paired_lookup",
+                        summary="Some paired index IDs in the uploaded project file were not found in the loaded index tables.",
+                        details=[f"Sample '{sid}' uses unknown paired index ID {i7_id!r}."],
+                        notify_text="Import failed. Some paired index IDs were not found in the loaded index tables.",
+                    )
                 i7_seq = pair["i7"]
                 i5_seq = pair["i5"]
             else:
                 if not i7_seq:
                     i7_seq = single_lookup.get(i7_id)
                     if not i7_seq:
-                        raise ValueError(f"{sid}: i7 index ID '{i7_id}' not found")
+                        raise ProjectImportError(
+                            code="missing_i7_lookup",
+                            summary="Some index IDs in the uploaded project file were not found in the loaded index tables.",
+                            details=[f"Sample '{sid}' uses unknown i7 index ID {i7_id!r}."],
+                            notify_text="Import failed. Some index IDs were not found in the loaded index tables.",
+                        )
                 if not i5_seq:
                     i5_seq = single_lookup.get(i5_id)
                     if not i5_seq:
-                        raise ValueError(f"{sid}: i5 index ID '{i5_id}' not found")
+                        raise ProjectImportError(
+                            code="missing_i5_lookup",
+                            summary="Some index IDs in the uploaded project file were not found in the loaded index tables.",
+                            details=[f"Sample '{sid}' uses unknown i5 index ID {i5_id!r}."],
+                            notify_text="Import failed. Some index IDs were not found in the loaded index tables.",
+                        )
 
         if "required_reads_m" in df.columns and pd.notna(r["required_reads_m"]):
             req = coerce_reads_m(r["required_reads_m"])

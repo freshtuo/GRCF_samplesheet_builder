@@ -18,6 +18,7 @@ from samplesheet_tool.ui.state import (
     make_sample_uid, split_sample_uid, 
 )
 from samplesheet_tool.ui import actions
+from samplesheet_tool.ui.project_io import ProjectImportError
 from samplesheet_tool.ui.reads import coerce_reads_m, display_reads_m, format_fraction, format_reads_m
 from samplesheet_tool.ui.shared_catalog import load_shared_catalog, shared_project_path
 from samplesheet_tool.ui.runtime_config import RuntimeConfig, save_runtime_config, FLOWCELL_PRESETS
@@ -57,7 +58,6 @@ def panel_btn(btn: Any) -> Any:
     )
 
     return btn
-
 
 def _sync_catalog_if_projects_missing(state: RunState) -> None:
     """Refresh the shared catalog if local project entries reference deleted project files."""
@@ -676,62 +676,63 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
     """
     Creates a modal popup (dialog) used for importing a project from CSV/TSV/TXT file.
     """
-    with tracked_dialog(state, refresh_all) as dialog, ui.card().classes("w-[520px]"):
+    with tracked_dialog(state, refresh_all) as dialog, ui.card().classes("w-[640px] max-w-[96vw]"):
         ui.label("Import Project").classes("text-base font-semibold")
 
         # -------------------------
         # basic metadata
         # -------------------------
-        project_id = ui.input("project_id", placeholder="e.g. Gudas-XT-20288").props("autofocus")
+        with ui.row().classes("w-full gap-3 items-end no-wrap"):
+            project_id = ui.input("project_id", placeholder="e.g. Gudas-XT-20288").props("autofocus").classes("w-[55%]")
 
-        index_type = ui.select(
-            options = ["dual", "single"],
-            value = "dual",
-            label = "index type",
-        ).classes("w-full")
+            index_type = ui.select(
+                options = ["dual", "single"],
+                value = "dual",
+                label = "index type",
+            ).classes("w-[45%]")
 
-        library_type = ui.input(
-            "Library type",
-            placeholder = "e.g. RNA-seq, scRNA-seq, Amplicon-seq", 
-        ).classes("w-full")
+        with ui.row().classes("w-full gap-3 items-end no-wrap"):
+            library_type = ui.input(
+                "Library type",
+                placeholder = "e.g. RNA-seq, scRNA-seq, Amplicon-seq", 
+            ).classes("w-[55%]")
 
-        sequencing_type = ui.input(
-            "Sequencing type", 
-            placeholder = "e.g. PE50+8+8"
-        ).classes("w-full")
+            sequencing_type = ui.input(
+                "Sequencing type", 
+                placeholder = "e.g. PE50+8+8"
+            ).classes("w-[45%]")
 
-        required_reads_mode = ui.select(
-            options={
-                "per_sample": "Per sample",
-                "per_project": "Per project", 
-            }, 
-            value="per_sample", 
-            label="Required reads mode", 
-        ).classes("w-full")
+        with ui.row().classes("w-full gap-3 items-end no-wrap"):
+            required_reads_mode = ui.select(
+                options={
+                    "per_sample": "Per sample",
+                    "per_project": "Per project", 
+                }, 
+                value="per_sample", 
+                label="Required reads mode", 
+            ).classes("w-[55%]")
 
-        default_reads = ui.number(
-            "Default required reads per sample (M)",
-            value=40,
-            min=0.01,
-            step=0.01,
-        ).classes("w-full")
+            default_reads = ui.number(
+                "Default required reads per sample (M)",
+                value=40,
+                min=0.01,
+                step=0.01,
+            ).classes("w-[45%]")
 
-        required_reads_hint = ui.label(
-            "Used only when the uploaded file does not provide required_reads_m."
-        ).classes("text-xs text-gray-500")
+        required_reads_hint = ui.label("").classes("text-xs text-gray-500")
 
         def _sync_required_reads_ui():
             if required_reads_mode.value == "per_project":
                 default_reads.label = "Default required reads per project (M)"
                 required_reads_hint.text = (
-                    "If the uploaded file does not provide required_reads_m, "
-                    "the app will divide the project total by sample count "
-                    "and store the result per sample."
+                    "Used only if the uploaded file does not include required_reads_m. "
+                    "In 'Per project' mode, the total is split evenly across all samples."
                 )
             else:
                 default_reads.label = "Default required reads per sample (M)"
                 required_reads_hint.text = (
-                    "Used only when the uploaded file does not provide required_reads_m."
+                    "Used only if the uploaded file does not include required_reads_m. "
+                    "In 'Per sample' mode, this value is assigned to each sample."
                 )
             default_reads.update()
 
@@ -740,23 +741,55 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
 
         ui.separator()
 
-        # -------------------------
-        # file upload
-        # -------------------------
-        ui.label("Project sample file (CSV/TSV)").classes("text-sm font-semibold")
-
         uploaded = {
             "path": None,
             "name": None,
         }
 
-        uploader_container = ui.column()
+        uploader_slot = {"container": None}
+        uploaded_label_slot = {"label": None}
+        error_slot = {"container": None}
+
+        def _clear_import_error() -> None:
+            container = error_slot["container"]
+            if container is not None:
+                container.clear()
+
+        def _show_import_error(err: ProjectImportError) -> None:
+            container = error_slot["container"]
+            if container is None:
+                return
+            container.clear()
+            with container:
+                with ui.card().classes("w-full bg-red-50 border border-red-200 shadow-none"):
+                    ui.label(err.summary).classes("text-sm font-semibold text-red-900")
+                    for detail in err.details:
+                        ui.label(detail).classes("text-xs text-red-800")
+
+        def _cleanup_uploaded_file(clear_label: bool = True) -> None:
+            raw = uploaded.get("path")
+            if raw:
+                try:
+                    p = Path(raw)
+                    if p.exists():
+                        p.unlink()
+                except Exception:
+                    pass
+            uploaded["path"] = None
+            uploaded["name"] = None
+            if clear_label:
+                label = uploaded_label_slot["label"]
+                if label is not None:
+                    label.text = "No file uploaded yet."
 
         async def on_upload_project_file(e):
             """
             upload handler.
             e.file is a SpooledTemporaryFile-like object.
             """
+            _clear_import_error()
+            _cleanup_uploaded_file(clear_label=False)
+
             # write uploaded file to a temp path
             content = await e.file.read()
 
@@ -767,25 +800,22 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
 
             uploaded["path"] = str(tmp_path)
             uploaded["name"] = filename
-
-            ui.notify(f"Uploaded: {filename}", type="positive")
+            label = uploaded_label_slot["label"]
+            if label is not None:
+                label.text = f"Uploaded file: {filename}"
+            build_uploader()
 
         def build_uploader():
-            uploader_container.clear()
-            ui.upload(
-                on_upload = on_upload_project_file, 
-                auto_upload = True, 
-                multiple = False,
-            ).props("accept=.csv,.tsv,.txt")
-
-        build_uploader()
-
-        # -------------------------
-        # action buttons
-        # -------------------------
-        with ui.row().classes("justify-end gap-2 mt-4"):
-            panel_btn(ui.button("Cancel", on_click=dialog.close))
-            panel_btn(ui.button("Import", on_click=lambda: _do_import()))
+            container = uploader_slot["container"]
+            if container is None:
+                return
+            container.clear()
+            with container:
+                ui.upload(
+                    on_upload = on_upload_project_file, 
+                    auto_upload = True, 
+                    multiple = False,
+                ).props("accept=.csv,.tsv,.txt").classes("w-full import-project-uploader")
 
         # -------------------------
         # import action
@@ -831,26 +861,52 @@ def import_project_dialog(state: RunState, refresh_all) -> None:
                     default_required_reads_m = coerce_reads_m(default_reads.value) if default_reads.value is not None else None, 
                     required_reads_mode=required_reads_mode.value or "per_sample", 
                 )
-            except Exception as e:
-                ui.notify(f"Import failed: {e}", type="negative")
+            except ProjectImportError as e:
+                _show_import_error(e)
+                ui.notify(e.notify_text or "Import failed. See details below.", type="negative", timeout=8000)
                 return
-            finally:
-                # clean up temporary file
-                try:
-                    if tmp_path.exists():
-                        tmp_path.unlink()
-                except Exception:
-                    pass
+            except Exception as e:
+                error = ProjectImportError(
+                    code="unexpected_import_error",
+                    summary="The import failed unexpectedly.",
+                    details=[str(e)] if str(e) else [],
+                    notify_text="Import failed unexpectedly. See details below.",
+                )
+                _show_import_error(error)
+                ui.notify(error.notify_text, type="negative", timeout=8000)
+                return
 
-                # reset upload state
-                uploaded["path"] = None
-                uploaded["name"] = None
-
+            _clear_import_error()
+            _cleanup_uploaded_file(clear_label=True)
             ui.notify(f"Imported project {pid} ({len(proj.samples)} samples)", type="positive")
 
             # Close the modal and update the main UI
             dialog.close()
             refresh_all()
+
+        ui.separator()
+        ui.label("Project sample file (CSV/TSV)").classes("text-sm font-semibold")
+        uploader_slot["container"] = ui.column().classes("w-full")
+        build_uploader()
+        uploaded_label_slot["label"] = ui.label("No file uploaded yet.").classes("mt-2 text-xs text-gray-500")
+
+        error_slot["container"] = ui.column().classes("w-full")
+        with error_slot["container"]:
+            ui.element("div")
+
+        # -------------------------
+        # action buttons
+        # -------------------------
+        with ui.row().classes("justify-end gap-2 mt-4"):
+            panel_btn(ui.button("Cancel", on_click=dialog.close))
+            panel_btn(ui.button("Import", on_click=lambda: _do_import()))
+
+        def _reset_import_dialog_state(_e=None) -> None:
+            _clear_import_error()
+            _cleanup_uploaded_file(clear_label=True)
+            build_uploader()
+
+        dialog.on("hide", _reset_import_dialog_state)
 
     dialog.open()
 
@@ -1753,10 +1809,12 @@ def build_lane_panel(state: RunState, refresh_all) -> None:
                     ).classes("text-sm text-gray-700")
 
                     # progress bar (right-aligned, short)
-                    ui.linear_progress(
-                        value=min(pct, 1.0),
-                        color="red" if pct >= 1.0 else "primary",
-                    ).props("show-value=false").classes("w-16")
+                    fill_pct = max(0.0, min(pct, 1.0)) * 100.0
+                    fill_color = "#E74C3C" if pct >= 1.0 else "#0284C7"
+                    with ui.element("div").classes("w-16 h-2 rounded-full bg-gray-200 overflow-hidden"):
+                        ui.element("div").classes("h-full").style(
+                            f"width:{fill_pct:.3f}%; background-color:{fill_color};"
+                        )
 
                     ui.label(format_fraction(pct)).classes("text-xs text-gray-500 tabular-nums")
 
@@ -1937,6 +1995,11 @@ def build_main_view(state: RunState) -> None:
     ui.add_head_html("""
         <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+        .import-project-uploader .q-uploader__title,
+        .import-project-uploader .q-uploader__subtitle,
+        .import-project-uploader .q-uploader__header-text {
+            display: none !important;
+        }
         </style>
     """)
     # Create a persistent outer container
