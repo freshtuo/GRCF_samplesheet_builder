@@ -3,3 +3,4 @@ src/samplesheet_tool/__pycache__/
 src/samplesheet_tool/ui/__pycache__/
 tests/data/
 tests/out/
+.codex
