@@ -312,16 +312,18 @@ Key fields:
 ### 4.1 Persistent Panels (always visible)
 
 - **Index Panel**: import/manage named index sets; flattened lookup tables are rebuilt for project auto-fill
-- **Project Panel**: view/import/remove shared projects (removal does not auto-remove local lane assignments)
+- **Project Panel**: view/import/remove shared projects; includes a batch-friendly Manage Projects dialog (removal does not auto-remove local lane assignments)
 - **Sample Panel**: shows samples for selected project; inspect indexes/reads/etc.
-- **Lane Panel**: assign/remove projects/samples to lanes; shows lane status indicator
-- **Messages Panel**: warnings/errors/info pushed by validation and actions
+- **Lane Panel**: assign/remove projects or samples to lanes; supports multi-project removal and shows lane status indicator
+- **Messages Panel**: compact paginated monitor for warnings/errors plus a detailed dialog view
 
 ### 4.2 Dialog-Based Views (modal)
 
 - **Settings dialog**: edits runtime (flowcell, lanes, capacity, read lengths, output_dir, shared_catalog_dir, user_name)
   - On Windows web sessions, folder paths are entered manually; native Tk folder pickers are disabled because they can block the NiceGUI connection.
 - **Summary dialog**: aggregated view of current assignments (run/project/sample levels)
+- **Manage Projects dialog**: sortable shared-project table with search, multi-select, and confirmed batch removal
+- **Messages dialog**: expanded full-table view for inspecting all message columns
 
 ### 4.3 Validation Mechanism (not a panel)
 
@@ -368,6 +370,9 @@ Lane-local Validation within each lane
         ↓
 Lane status updated + messages pushed
 Final Validation across lanes (Lane status updated + messages pushed)
+
+Lane-only edits are refreshed locally in the toolbar/messages/lanes sections so the
+right-hand lane scroll position is preserved more naturally than with a full-page redraw.
 ```
 
 ### 5.3 Final Validation + Export
@@ -461,6 +466,7 @@ Removing a project from Project Panel:
 - removes it from the shared catalog
 - **does not automatically remove already-assigned items from lanes**
 - lane content is only changed via Lane Panel actions
+- supports both single-project removal and confirmed batch removal through the Manage Projects dialog
 
 If another user deleted the same project already:
 - refresh shared catalog
@@ -515,6 +521,7 @@ Collaboration is intentionally simple:
 - the `Refresh Shared` toolbar button remains available for immediate manual reload
 - duplicate project IDs are rejected
 - removing an already-deleted project becomes a refresh case, not a crash
+- batch project removal reports removed / already-missing / failed cases separately
 
 The app does **not** implement real-time shared lane planning. It uses lightweight polling plus safe deferred redraws instead.
 

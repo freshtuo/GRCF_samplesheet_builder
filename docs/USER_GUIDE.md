@@ -128,7 +128,8 @@ If another user already removed the same set, the app refreshes and shows a warn
 Used to:
 - Import project sample files (CSV/TSV)
 - Select active project
-- Remove project from panel
+- Remove the active project from the panel
+- Open `Manage Projects` to review and remove multiple shared projects
 
 Projects shown here come from the shared catalog folder.
 If another user adds, removes, or replaces a project file with the same `project_id`, the app can detect that change and refresh the project UI automatically.
@@ -143,6 +144,14 @@ When importing a project you define:
 Project removal:
 - Removes it from the shared catalog
 - Does NOT automatically modify lane assignments
+
+Manage Projects dialog:
+- Shows a sortable table of shared projects
+- Displays project metadata in separate columns instead of one combined label
+- Includes import metadata such as `imported_at` and `imported_by`
+- Supports searching by project metadata, including index type and imported-by
+- Supports selecting multiple projects and removing them in one confirmed action
+- Handles already-deleted projects gracefully in multi-user cases
 
 ### 🧪 3.3 Samples Panel
 
@@ -169,6 +178,9 @@ You can:
 - Add selected samples to one or more lanes
 - Specify planned reads per sample per lane
 
+If selected sample-lane pairs already exist, the new assignment overwrites those existing planned reads.
+The UI shows a notification when that happens.
+
 ### 🛣 3.4 Lane Panel
 Displays lane planning summary.
 
@@ -190,8 +202,10 @@ Lane Status Colors
 Errors block export.
 
 You can:
-- Remove specific project from lane, this will remove all samples related to this project
+- Remove one or more selected projects from a lane; this removes all samples related to those projects from that lane
 - Clear entire lane
+
+Lane-only edits refresh the lane-related UI locally, so the right-hand lane view should stay near the lane you are working on instead of jumping back to the top.
 
 ### 📢 3.5 Messages Panel
 Centralized validation and system messages.
@@ -204,7 +218,9 @@ Supports:
 - Search filter
 - Lane filter
 - Project filter
-- Clear index import messages
+- Compact paginated monitor in the main layout
+- `Detailed View` dialog for the full message table
+- Clear index import messages in the detailed dialog
 
 All validation results appear here.
 
@@ -269,6 +285,10 @@ Project → Sample → Lane → Allocated reads
 ```
 
 Used for debugging distribution.
+
+Supports filtering by:
+- Project
+- Lane
 
 #### 3️⃣ Project Summary
 

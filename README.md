@@ -16,6 +16,10 @@ Designed for structured lane planning, validation, reproducible run configuratio
 
 - Assign samples to lanes
 
+- Manage shared projects in a sortable dialog with batch removal
+
+- Review messages in both a compact monitor and a detailed dialog view
+
 - Validate lane-level and run-level constraints
 
 - Export standardized SampleSheet files
@@ -23,6 +27,8 @@ Designed for structured lane planning, validation, reproducible run configuratio
 - Save and reload planning snapshots (Plans)
 
 - Keep sequencing plans private per user while reusing the same shared project catalog
+
+- Refresh lane-related UI locally so edits do not bounce the user back to the top lanes
 
 ## 🧱 Installation
 Requirements
