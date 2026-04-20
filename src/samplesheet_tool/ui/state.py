@@ -58,6 +58,37 @@ class Message:
 
 
 @dataclass(frozen=True)
+class ProjectRemovalResult:
+    """Summary returned after removing one or more shared projects."""
+    removed_ids: List[str] = field(default_factory=list)
+    already_missing_ids: List[str] = field(default_factory=list)
+    failed_ids: List[str] = field(default_factory=list)
+    failed_reasons: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def removed_count(self) -> int:
+        return len(self.removed_ids)
+
+    @property
+    def already_missing_count(self) -> int:
+        return len(self.already_missing_ids)
+
+    @property
+    def failed_count(self) -> int:
+        return len(self.failed_ids)
+
+
+@dataclass(frozen=True)
+class LaneProjectRemovalResult:
+    """Summary returned after removing one or more projects from a lane."""
+    removed_ids: List[str] = field(default_factory=list)
+
+    @property
+    def removed_count(self) -> int:
+        return len(self.removed_ids)
+
+
+@dataclass(frozen=True)
 class ValidationResult:
     """Result returned by CLI validation."""
     problems: List[Problem] = field(default_factory=list)
@@ -367,7 +398,6 @@ class RunState:
     samples_rows_per_page: int = 50 # number of samples to show in table
     # store selected sample_uids (UI selection)
     selected_sample_uids: List[str] = field(default_factory=list)
-
     # ---------- runtime environment (UI-first) ----------
     flowcell_type: str = "10B"
     n_lanes: int = 8

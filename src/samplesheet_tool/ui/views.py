@@ -13,7 +13,8 @@ from pathlib import Path
 from tkinter import Tk, filedialog
 
 from samplesheet_tool.ui.state import (
-    RunState, LaneStatus, PlanIntegrityError, Message, 
+    RunState, LaneStatus, PlanIntegrityError, Message,
+    ProjectRemovalResult, LaneProjectRemovalResult,
     save_plan, load_plan, default_store_dir, 
     make_sample_uid, split_sample_uid, 
 )
@@ -326,6 +327,108 @@ def invalidate_validation(state: RunState):
             return fn(*args, **kwargs)
         return wrapper
     return decorator
+
+
+def _project_removal_lines(result: ProjectRemovalResult) -> list[str]:
+    """Convert a project-removal result into concise user-facing lines."""
+    lines: list[str] = []
+    if result.removed_count:
+        lines.append(f"Removed {result.removed_count} project(s).")
+    if result.already_missing_count:
+        lines.append(
+            f"{result.already_missing_count} project(s) were already removed by another user."
+        )
+    if result.failed_count:
+        lines.append(f"{result.failed_count} project(s) could not be removed.")
+    return lines or ["No project was removed."]
+
+
+def _notify_project_removal_result(result: ProjectRemovalResult) -> None:
+    """Show a compact toast summary after removing shared projects."""
+    lines = _project_removal_lines(result)
+    level = "negative" if result.failed_count else ("warning" if result.already_missing_count else "positive")
+    ui.notify(" ".join(lines), type=level)
+
+
+def _notify_lane_project_removal_result(result: LaneProjectRemovalResult) -> None:
+    """Show a simple confirmation after removing projects from one lane."""
+    if result.removed_count:
+        ui.notify(f"Removed {result.removed_count} project(s) from the lane.", type="positive")
+    else:
+        ui.notify("None of the selected projects were assigned to that lane.", type="warning")
+
+
+def _project_management_rows(state: RunState) -> List[Dict[str, Any]]:
+    """Build sortable rows for the shared-project management dialog."""
+    rows: List[Dict[str, Any]] = []
+    for pid in sorted(state.catalog.projects.keys()):
+        project = state.catalog.projects[pid]
+        rows.append(
+            {
+                "project_id": pid,
+                "index_type": project.index_type or "",
+                "library_type": project.library_type or "",
+                "sequencing_type": project.sequencing_type or "",
+                "n_samples": project.n_samples,
+                "total_required_reads_m": (
+                    format_reads_m(project.total_required_reads_m)
+                    if project.total_required_reads_m is not None else ""
+                ),
+                "imported_at": state.catalog.project_updated_at.get(pid, "") or "",
+                "imported_by": state.catalog.project_updated_by.get(pid, "") or "",
+            }
+        )
+    return rows
+
+
+def _filtered_messages(
+    state: RunState,
+    *,
+    query: str = "",
+    lane_value: str = "(any)",
+    project_value: str = "(any)",
+) -> List[Message]:
+    """Return messages matching the current compact/full-view filters."""
+    q = (query or "").strip().lower()
+    out: List[Message] = []
+    for message in list(state.messages):
+        if lane_value != "(any)":
+            if message.lane is None or str(message.lane) != lane_value:
+                continue
+        if project_value != "(any)":
+            if (message.project_id or "") != project_value:
+                continue
+        if q:
+            hay = " ".join(
+                [
+                    message.level,
+                    message.source,
+                    message.text,
+                    str(message.lane or ""),
+                    message.project_id or "",
+                    message.sample_id or "",
+                ]
+            ).lower()
+            if q not in hay:
+                continue
+        out.append(message)
+    return out
+
+
+def _message_rows(messages: List[Message]) -> List[Dict[str, Any]]:
+    """Convert message objects into table rows for either monitor or full view."""
+    return [
+        {
+            "level": m.level,
+            "source": m.source,
+            "lane": m.lane or "",
+            "project": m.project_id or "",
+            "sample": m.sample_id or "",
+            "text": m.text,
+            "ts": m.ts,
+        }
+        for m in messages
+    ]
 
 # -------------------------
 # toolbar
@@ -1019,6 +1122,13 @@ def open_summary_dialog(state: RunState) -> None:
                     label="Project",
                 ).classes("w-56")
 
+                lane_opts = ["All"] + [str(i) for i in range(1, state.n_lanes + 1)]
+                lane_sel = ui.select(
+                    options=lane_opts,
+                    value="All",
+                    label="Lane",
+                ).classes("w-40")
+
             ui.separator()
 
             # ---------- Content (placeholder for now) ----------
@@ -1067,6 +1177,9 @@ def open_summary_dialog(state: RunState) -> None:
                         state, 
                         project_filter=project_sel.value or "All",
                     )
+                    lane_filter = lane_sel.value or "All"
+                    if lane_filter != "All":
+                        rows = [row for row in rows if str(row["lane"]) == lane_filter]
                     with content:
                         ui.table(
                             columns=ASSIGNMENT_DETAIL_COLUMNS,
@@ -1085,12 +1198,140 @@ def open_summary_dialog(state: RunState) -> None:
                             row_key="key",
                         ).props("dense").classes("w-full")
 
+                lane_sel.visible = (view_sel.value == "Assignment detail")
+                lane_sel.update()
+
             # bind refresh
             view_sel.on_value_change(lambda _: render_summary())
             project_sel.on_value_change(lambda _: render_summary())
+            lane_sel.on_value_change(lambda _: render_summary())
 
             # initial render
             render_summary()
+
+    dialog.open()
+
+
+def open_manage_projects_dialog(state: RunState, refresh_all) -> None:
+    """Review shared projects in a sortable table and remove selected rows."""
+    columns = [
+        {"name": "project_id", "label": "Project ID", "field": "project_id", "sortable": True},
+        {"name": "index_type", "label": "Index type", "field": "index_type", "sortable": True},
+        {"name": "library_type", "label": "Library type", "field": "library_type", "sortable": True},
+        {"name": "sequencing_type", "label": "Sequencing type", "field": "sequencing_type", "sortable": True},
+        {"name": "n_samples", "label": "# Samples", "field": "n_samples", "sortable": True, "align": "right"},
+        {
+            "name": "total_required_reads_m",
+            "label": "Total required (M)",
+            "field": "total_required_reads_m",
+            "sortable": True,
+            "align": "right",
+        },
+        {"name": "imported_at", "label": "Imported at", "field": "imported_at", "sortable": True},
+        {"name": "imported_by", "label": "Imported by", "field": "imported_by", "sortable": True},
+    ]
+
+    with tracked_dialog(state, refresh_all).props("persistent") as dialog:
+        with ui.card().classes("w-[1320px] max-w-[98vw]"):
+            with ui.row().classes("w-full items-center gap-2"):
+                ui.label("Manage Projects").classes("text-lg font-semibold")
+                panel_btn(ui.button("Close", on_click=dialog.close).classes("ml-auto"))
+
+            ui.label(
+                "Use the table below to sort, review, and remove multiple shared projects safely."
+            ).classes("text-sm text-gray-500")
+
+            with ui.row().classes("w-full items-end gap-3"):
+                search = ui.input("Search", placeholder="project id, library type, sequencing type...").classes("grow")
+                selected_count = ui.label("Selected: 0").classes("text-sm text-gray-500 min-w-[110px]")
+
+            table_host = ui.element("div").classes("w-full")
+
+            def _selected_ids(table) -> List[str]:
+                return [row["project_id"] for row in (table.selected or [])]
+
+            def _render_table() -> None:
+                table_host.clear()
+                rows = _project_management_rows(state)
+                query = (search.value or "").strip().lower()
+                if query:
+                    rows = [
+                        row for row in rows
+                        if query in " ".join(
+                            [
+                                str(row.get("project_id", "")),
+                                str(row.get("index_type", "")),
+                                str(row.get("library_type", "")),
+                                str(row.get("sequencing_type", "")),
+                                str(row.get("n_samples", "")),
+                                str(row.get("total_required_reads_m", "")),
+                                str(row.get("imported_at", "")),
+                                str(row.get("imported_by", "")),
+                            ]
+                        ).lower()
+                    ]
+
+                with table_host:
+                    table = ui.table(
+                        columns=columns,
+                        rows=rows,
+                        row_key="project_id",
+                        selection="multiple",
+                        pagination={"rowsPerPage": 12},
+                    ).classes("w-full")
+                    table.props("dense flat bordered")
+                    table.props(":rows-per-page-options='[12,24,50,100]'")
+                    table.style("white-space: nowrap;")
+
+                    def _update_selected_label() -> None:
+                        selected_count.text = f"Selected: {len(table.selected or [])}"
+
+                    table.on("selection", lambda _: _update_selected_label())
+                    _update_selected_label()
+
+                    def _confirm_remove_selected() -> None:
+                        selected_ids = _selected_ids(table)
+                        if not selected_ids:
+                            ui.notify("Select at least one project to remove.", type="warning")
+                            return
+
+                        preview = ", ".join(selected_ids[:3])
+                        suffix = "..." if len(selected_ids) > 3 else ""
+
+                        with tracked_dialog(state, refresh_all) as confirm_dlg, ui.card().classes("w-[560px] max-w-[96vw]"):
+                            ui.label("Remove selected projects?").classes("text-base font-semibold")
+                            ui.label(
+                                f"This will remove {len(selected_ids)} project(s) from the shared catalog."
+                            ).classes("text-sm")
+                            ui.label(f"Selection preview: {preview}{suffix}").classes("text-sm text-gray-500")
+
+                            with ui.row().classes("justify-end gap-2 w-full"):
+                                panel_btn(ui.button("Cancel", on_click=confirm_dlg.close))
+
+                                def _do_remove_selected() -> None:
+                                    try:
+                                        result = actions.remove_projects(state, selected_ids)
+                                    except ValueError as e:
+                                        ui.notify(str(e), type="negative")
+                                        return
+                                    except PermissionError as e:
+                                        ui.notify(str(e), type="negative")
+                                        return
+
+                                    confirm_dlg.close()
+                                    dialog.close()
+                                    _notify_project_removal_result(result)
+                                    refresh_all()
+
+                                panel_btn(ui.button("Remove selected", on_click=_do_remove_selected))
+
+                        confirm_dlg.open()
+
+                    with ui.row().classes("justify-end gap-2 w-full mt-3"):
+                        panel_btn(ui.button("Remove selected", on_click=_confirm_remove_selected))
+
+            search.on_value_change(lambda _: _render_table())
+            _render_table()
 
     dialog.open()
 
@@ -1565,9 +1806,13 @@ def build_project_panel(state: RunState, refresh_all) -> None:
         if p.total_required_reads_m is not None:
             ui.label(f"Total reads(M): {format_reads_m(p.total_required_reads_m)}").classes("text-xs text-gray-600")
 
-        panel_btn(
-            ui.button("Remove", on_click=lambda: _confirm_remove_project(state, refresh_all)), 
-        ).classes("ml-auto")
+        with ui.row().classes("items-center gap-2 ml-auto"):
+            panel_btn(
+                ui.button("Manage Projects", on_click=lambda: open_manage_projects_dialog(state, refresh_all)),
+            )
+            panel_btn(
+                ui.button("Remove", on_click=lambda: _confirm_remove_project(state, refresh_all)),
+            )
 
     ## debug
     ##ui.label(f"DEBUG pid={state.selected_project_id} projects={list(state.catalog.projects.keys())}").classes("text-xs text-gray-500")
@@ -1590,8 +1835,16 @@ def _confirm_remove_project(state: RunState, refresh_all):
     dlg.open()
 
 def _do_remove_project(state: RunState, pid: str, dlg, refresh_all):
-    actions.remove_project(state, pid)
+    try:
+        result = actions.remove_project(state, pid)
+    except ValueError as e:
+        ui.notify(str(e), type="negative")
+        return
+    except PermissionError as e:
+        ui.notify(str(e), type="negative")
+        return
     dlg.close()
+    _notify_project_removal_result(result)
     refresh_all()
 
 
@@ -1599,7 +1852,7 @@ def _do_remove_project(state: RunState, pid: str, dlg, refresh_all):
 # Samples panel
 # -------------------------
 
-def build_sample_panel(state: RunState, refresh_all) -> None:
+def build_sample_panel(state: RunState, refresh_all, refresh_lane_related_ui) -> None:
     """creates a data-rich panel that displays samples in a table and allows users to assign them to sequencing lanes."""
     ui.label("Samples").classes("text-base font-semibold")
 
@@ -1744,6 +1997,15 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
                 ui.notify("Reads per lane (M) must be > 0", type="warning")
                 return
 
+            # Count existing sample-lane pairs so we can tell the user when the
+            # new assignment updates prior values instead of creating new ones.
+            overwritten_pairs = sum(
+                1
+                for sample_uid in sample_uids
+                for lane_id in lane_ids
+                if lane_id in state.assignments.get(sample_uid, {})
+            )
+
             # Persist changes
             try:
                 actions.assign_samples_to_lanes(state, sample_uids, lane_ids, coerce_reads_m(planned_reads.value))
@@ -1756,7 +2018,17 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
             select_all_cb.value = False
             _update_selected_count()
 
-            refresh_all()
+            if overwritten_pairs:
+                ui.notify(
+                    f"Added assignments. Updated {overwritten_pairs} existing sample-lane assignment(s).",
+                    type="warning",
+                )
+            else:
+                ui.notify("Added assignments.", type="positive")
+
+            # Lane-related panels can refresh locally; this keeps the right-hand
+            # scroll container mounted instead of jumping back to lane 1.
+            refresh_lane_related_ui()
 
         panel_btn(ui.button("Add selected", on_click=do_add))
 
@@ -1765,7 +2037,7 @@ def build_sample_panel(state: RunState, refresh_all) -> None:
 # Lanes panel (dense summary)
 # -------------------------
 
-def build_lane_panel(state: RunState, refresh_all) -> None:
+def build_lane_panel(state: RunState, refresh_lane_related_ui) -> None:
     """creates a monitoring and management panel for sequencing lanes."""
     ui.label("Lanes").classes("text-base font-semibold")
 
@@ -1773,22 +2045,22 @@ def build_lane_panel(state: RunState, refresh_all) -> None:
     for lid in range(1, state.n_lanes + 1):
         lane = state.lanes[lid]
 
-        def make_on_remove_project(lid: int):
+        def make_on_remove_projects(lid: int):
             @invalidate_validation(state)
-            def handler(pid: str):
-                _rm_project(state, lid, pid, refresh_all)
+            def handler(project_ids: List[str]):
+                _rm_projects(state, lid, project_ids, refresh_lane_related_ui)
             return handler
 
-        _on_remove_project = make_on_remove_project(lid)
+        _on_remove_projects = make_on_remove_projects(lid)
 
         def make_on_clear_lane(lid: int):
             @invalidate_validation(state)
             def handler():
-                _clear_lane(state, lid, refresh_all)
+                _clear_lane(state, lid, refresh_lane_related_ui)
             return handler
         _on_clear_lane = make_on_clear_lane(lid)
 
-        with ui.card().classes("w-full mb-2"):
+        with ui.card().props(f'id=lane-card-{lid}').classes("w-full mb-2"):
             used = lane_used_reads_m(state, lid)
             capacity = coerce_reads_m(state.lane_capacity_m)
             pct = used / capacity if capacity > 0 else 0
@@ -1828,150 +2100,161 @@ def build_lane_panel(state: RunState, refresh_all) -> None:
 
             # ---------- Actions ----------
             with ui.row().classes("items-center gap-2 mt-1"):
-                # local buffer to store selected project
-                rm_selected = {"pid": None}
+                # Track the current selection explicitly so the remove handler stays simple.
+                rm_selected = {"pids": []}
 
                 rm_sel = ui.select(
                     options=lane.project_ids,
                     label="Remove project(s)",
-                ).classes("w-56")
+                    multiple=True,
+                ).classes("w-64")
 
-                # freeze rm_selected for this lane
-                rm_sel.on_value_change(lambda e, _buf=rm_selected: _buf.__setitem__("pid", e.value))
+                rm_sel.on_value_change(
+                    lambda e, _buf=rm_selected: _buf.__setitem__("pids", list(e.value or []))
+                )
 
-                # freeze handler + buffer for this lane
                 panel_btn(
-                    ui.button("Remove", on_click=lambda _h=_on_remove_project, _buf=rm_selected: _h(_buf["pid"])), 
+                    ui.button(
+                        "Remove selected",
+                        on_click=lambda _h=_on_remove_projects, _buf=rm_selected: _h(_buf["pids"]),
+                    ),
                 )
 
 
-def _rm_project(state: RunState, lane_id: int, project_id: str | None, refresh_all) -> None:
-    """Remove projects from a lane."""
-    ###ui.notify(f"Removing project {project_id} from lane {lane_id}", type="info") # debug only
-    # Guard against empty selection
-    if not project_id:
-        ui.notify("Select a project to remove", type="warning")
+def _rm_projects(state: RunState, lane_id: int, project_ids: List[str], refresh_lane_related_ui) -> None:
+    """Remove the selected project or projects from one lane."""
+    if not project_ids:
+        ui.notify("Select one or more projects to remove.", type="warning")
         return
 
-    # Update state
-    actions.remove_project_from_lane(state, lane_id, project_id)
-
-    # Automatically save plan
-    save_plan(state)
-
-    # Trigger UI update
-    refresh_all()
+    result = actions.remove_projects_from_lane(state, lane_id, project_ids)
+    _notify_lane_project_removal_result(result)
+    refresh_lane_related_ui()
 
 
-def _clear_lane(state: RunState, lane_id: int, refresh_all) -> None:
+def _clear_lane(state: RunState, lane_id: int, refresh_lane_related_ui) -> None:
     """Wipe all data for a lane."""
-    # Update state
     actions.clear_lane(state, lane_id)
+    refresh_lane_related_ui()
 
-    # Automatically save plan
-    save_plan(state)
 
-    # Trigger UI update
-    refresh_all()
+def open_messages_dialog(state: RunState, refresh_all) -> None:
+    """Open a wider message view so all columns remain readable."""
+    full_columns = [
+        {"name": "level", "label": "Level", "field": "level", "sortable": True},
+        {"name": "source", "label": "Source", "field": "source", "sortable": True},
+        {"name": "lane", "label": "Lane", "field": "lane", "sortable": True},
+        {"name": "project", "label": "Project", "field": "project", "sortable": True},
+        {"name": "sample", "label": "Sample", "field": "sample", "sortable": True},
+        {"name": "text", "label": "Message", "field": "text"},
+        {"name": "ts", "label": "Time", "field": "ts", "sortable": True},
+    ]
+
+    with tracked_dialog(state, refresh_all).props("persistent") as dialog:
+        with ui.card().classes("w-[1440px] max-w-[98vw]"):
+            with ui.row().classes("w-full items-center gap-2"):
+                ui.label("Messages").classes("text-lg font-semibold")
+                panel_btn(ui.button("Close", on_click=dialog.close).classes("ml-auto"))
+
+            with ui.row().classes("w-full items-center gap-2"):
+                search = ui.input("Search", placeholder="text contains...").classes("grow")
+                lane_opts = ["(any)"] + [str(i) for i in range(1, state.n_lanes + 1)]
+                lane_sel = ui.select(options=lane_opts, value="(any)", label="Lane").classes("w-28")
+                proj_opts = ["(any)"] + sorted(state.catalog.projects.keys())
+                proj_sel = ui.select(options=proj_opts, value="(any)", label="Project").classes("w-48")
+                panel_btn(ui.button("Clear index import msgs", on_click=lambda: _clear_message_source(state, refresh_all, "index_import")))
+
+            content = ui.element("div").classes("w-full")
+
+            def _render_full_messages() -> None:
+                content.clear()
+                rows = _message_rows(
+                    _filtered_messages(
+                        state,
+                        query=search.value or "",
+                        lane_value=lane_sel.value or "(any)",
+                        project_value=proj_sel.value or "(any)",
+                    )
+                )
+                with content:
+                    ui.table(
+                        columns=full_columns,
+                        rows=rows,
+                        row_key="ts",
+                        pagination={"rowsPerPage": 15},
+                    ).classes("w-full").props("dense flat bordered").style("white-space: nowrap;")
+
+            search.on_value_change(lambda _: _render_full_messages())
+            lane_sel.on_value_change(lambda _: _render_full_messages())
+            proj_sel.on_value_change(lambda _: _render_full_messages())
+            _render_full_messages()
+
+    dialog.open()
 
 
 # -------------------------
 # Messages panel
 # -------------------------
 
+def _clear_message_source(state: RunState, refresh_all, source: str) -> None:
+    """Remove one message category and persist the updated plan."""
+    actions.clear_messages(state, source=source)
+    save_plan(state)
+    refresh_all()
+
+
 def build_messages_panel(state: RunState, refresh_all) -> None:
-    with ui.card().classes("w-full h-full").style("overflow:hidden;"):
-        ui.label("Messages").classes("text-base font-semibold")
+    """Render a compact monitor; deeper inspection lives in the full dialog."""
+    compact_columns = [
+        {"name": "level", "label": "Level", "field": "level", "sortable": True},
+        {"name": "lane", "label": "Lane", "field": "lane", "sortable": True},
+        {"name": "project", "label": "Project", "field": "project", "sortable": True},
+        {"name": "text", "label": "Message", "field": "text"},
+        {"name": "ts", "label": "Time", "field": "ts", "sortable": True},
+    ]
 
-        # Only show warnings/errors (by model), persistent
-        msgs = list(state.messages)
+    with ui.card().classes("w-full h-full flex flex-col").style("overflow:hidden;"):
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.label("Messages").classes("text-base font-semibold")
+            panel_btn(ui.button("Detailed View", on_click=lambda: open_messages_dialog(state, refresh_all)).classes("ml-auto"))
 
-        if not msgs:
+        if not state.messages:
             ui.label("No errors or warnings").classes("text-sm text-gray-500")
             return
 
-        # Controls
-        with ui.row().classes("w-full items-center gap-2"):
-            search = ui.input("Search", placeholder="text contains...").classes("w-full")
+        with ui.row().classes("w-full items-end gap-2 no-wrap"):
+            search = ui.input("Search", placeholder="text contains...").classes("min-w-0 flex-1")
             lane_opts = ["(any)"] + [str(i) for i in range(1, state.n_lanes + 1)]
-            lane_sel = ui.select(options=lane_opts, value="(any)", label="Lane").classes("w-28")
-
+            lane_sel = ui.select(options=lane_opts, value="(any)", label="Lane").classes("w-24 shrink-0")
             proj_opts = ["(any)"] + sorted(state.catalog.projects.keys())
-            proj_sel = ui.select(options=proj_opts, value="(any)", label="Project").classes("w-40")
+            proj_sel = ui.select(options=proj_opts, value="(any)", label="Project").classes("w-32 shrink-0")
 
-            panel_btn(ui.button("Clear index import msgs", on_click=lambda: _clear_source("index_import")))
+        # Keep the compact monitor short and paginated so the bottom scrollbar stays accessible.
+        table_container = ui.element("div").classes("w-full flex-1 min-h-0 overflow-auto")
 
-        def _clear_source(src: str):
-            actions.clear_messages(state, source=src)
-            save_plan(state)
-            refresh_all()
-
-        # Filter function
-        def _filtered() -> List[Message]:
-            q = (search.value or "").strip().lower()
-            lane_v = lane_sel.value
-            proj_v = proj_sel.value
-
-            out: List[Message] = []
-            for m in msgs:
-                if lane_v != "(any)":
-                    if m.lane is None or str(m.lane) != lane_v:
-                        continue
-                if proj_v != "(any)":
-                    if (m.project_id or "") != proj_v:
-                        continue
-                if q:
-                    hay = " ".join([m.level, m.source, m.text, str(m.lane or ""), m.project_id or "", m.sample_id or ""]).lower()
-                    if q not in hay:
-                        continue
-                out.append(m)
-            return out
-
-        columns = [
-            {"name": "level", "label": "level", "field": "level", "sortable": True},
-            {"name": "source", "label": "source", "field": "source", "sortable": True},
-            {"name": "lane", "label": "lane", "field": "lane", "sortable": True},
-            {"name": "project", "label": "project", "field": "project", "sortable": True},
-            {"name": "sample", "label": "sample", "field": "sample", "sortable": True},
-            {"name": "text", "label": "message", "field": "text"},
-            {"name": "ts", "label": "time", "field": "ts", "sortable": True},
-        ]
-
-        def _rows() -> List[Dict[str, Any]]:
-            out = []
-            for m in _filtered():
-                out.append(
-                    {
-                        "level": m.level,
-                        "source": m.source,
-                        "lane": m.lane or "",
-                        "project": m.project_id or "",
-                        "sample": m.sample_id or "",
-                        "text": m.text,
-                        "ts": m.ts,
-                    }
-                )
-            # newest last keeps context; user can sort by time if needed
-            return out
-
-        # table area: x/y scroll container (critical fix)
-        # Keep header+controls fixed, only table scrolls
-        table_container = ui.element("div").classes("w-full").style(
-            "overflow:auto; height: calc(100% - 96px);"  # 96px roughly for title+filters row
-        )
-
-        def _render_table():
+        def _render_table() -> None:
             table_container.clear()
+            rows = _message_rows(
+                _filtered_messages(
+                    state,
+                    query=search.value or "",
+                    lane_value=lane_sel.value or "(any)",
+                    project_value=proj_sel.value or "(any)",
+                )
+            )
             with table_container:
-                t = ui.table(columns=columns, rows=_rows(), row_key="ts").props("dense").classes("w-full")
-                # keep cells from wrapping so horizontal scroll works
+                t = ui.table(
+                    columns=compact_columns,
+                    rows=rows,
+                    row_key="ts",
+                    pagination={"rowsPerPage": 5},
+                ).props("dense flat").classes("w-full")
                 t.style("white-space: nowrap; width: 100%;")
+                t.props(":rows-per-page-options='[5,10]'")
 
-        # Re-render when controls change
         search.on_value_change(lambda _: _render_table())
         lane_sel.on_value_change(lambda _: _render_table())
         proj_sel.on_value_change(lambda _: _render_table())
-
         _render_table()
 
 
@@ -2005,6 +2288,28 @@ def build_main_view(state: RunState) -> None:
     # Create a persistent outer container
     container = ui.column().classes("w-full h-screen overflow-hidden")
 
+    @ui.refreshable
+    def toolbar_slot():
+        build_toolbar(state, refresh_all)
+
+    @ui.refreshable
+    def messages_slot():
+        build_messages_panel(state, refresh_all)
+
+    def refresh_lane_related_ui() -> None:
+        """Refresh only panels affected by lane assignment changes."""
+        toolbar_slot.refresh()
+        messages_slot.refresh()
+        lanes_slot.refresh()
+
+    @ui.refreshable
+    def sample_slot():
+        build_sample_panel(state, refresh_all, refresh_lane_related_ui)
+
+    @ui.refreshable
+    def lanes_slot():
+        build_lane_panel(state, refresh_lane_related_ui)
+
     def _dismiss_startup_warning() -> None:
         """Hide the current startup banner for the active session."""
         state.startup_warning = None
@@ -2016,7 +2321,7 @@ def build_main_view(state: RunState) -> None:
         container.clear()
         with container:
             # Top section
-            build_toolbar(state, refresh_all)
+            toolbar_slot()
 
             if state.startup_warning:
                 with ui.row().classes(
@@ -2044,19 +2349,19 @@ def build_main_view(state: RunState) -> None:
                             build_project_panel(state, refresh_all)
                     # Messages: take remaining height (this is the key)
                     with ui.element("div").classes("w-full flex-1 overflow-hidden"):
-                        build_messages_panel(state, refresh_all)
+                        messages_slot()
 
                 # Center column: Samples Table (x/y scroll)
                 with ui.column().classes("w-2/4 h-full overflow-hidden"):
                     with ui.card().classes("w-full h-full overflow-hidden"):
                         with ui.element("div").classes("w-full h-full overflow-auto"):
-                            build_sample_panel(state, refresh_all)
+                            sample_slot()
 
                 # Right column: Lanes (y scroll)
                 with ui.column().classes("w-1/4 h-full overflow-hidden"):
                     with ui.card().classes("w-full h-full overflow-hidden"):
-                        with ui.element("div").classes("w-full h-full overflow-auto"):
-                            build_lane_panel(state, refresh_all)
+                        with ui.element("div").props("id=lanes-scroll-container").classes("w-full h-full overflow-auto"):
+                            lanes_slot()
 
     # Initial render
     refresh_all()

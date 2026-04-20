@@ -20,6 +20,7 @@ from samplesheet_tool.ui.state import (
     Message, MessageLevel, 
     ValidationResult, 
     IndexMappingType, IndexTables,
+    ProjectRemovalResult, LaneProjectRemovalResult,
     SampleSheetRow, BaseSpaceRenderer, IEMRenderer, 
     save_plan, default_store_dir, 
     make_sample_uid, split_sample_uid, 
@@ -416,52 +417,83 @@ def import_project(
     
     return proj
 
-def remove_project(state: RunState, project_id: str) -> None:
-    if project_id not in state.catalog.projects:
-        return
+def _normalize_project_ids(project_ids: Iterable[str]) -> List[str]:
+    """Return project IDs in stable order without blanks or duplicates."""
+    seen: Set[str] = set()
+    out: List[str] = []
+    for raw in project_ids:
+        pid = (raw or "").strip()
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        out.append(pid)
+    return out
+
+
+def _remove_projects_core(state: RunState, project_ids: Iterable[str]) -> ProjectRemovalResult:
+    """Remove shared projects defensively so concurrent deletes stay harmless."""
+    selected_ids = _normalize_project_ids(project_ids)
+    if not selected_ids:
+        return ProjectRemovalResult()
     if state.shared_catalog_dir is None:
         raise ValueError("Shared catalog folder is not configured.")
 
-    ## remove from lanes
-    #for lane in state.lanes.values():
-    #    lane.sample_uids = [
-    #        uid for uid in lane.sample_uids if split_sample_uid(uid)[0] != project_id
-    #    ]
-    #    lane.project_ids = [
-    #        pid for pid in lane.project_ids if pid != project_id
-    #    ]
-
     try:
-        deleted = delete_shared_project(state.shared_catalog_dir, project_id)
-    except PermissionError:
-        ui.notify(
-            f"No permission to remove project '{project_id}' from the shared catalog.",
-            type="negative",
-        )
-        return
-    if not deleted:
+        working_catalog = load_shared_catalog(state.shared_catalog_dir)
+    except PermissionError as e:
+        raise PermissionError(
+            f"No permission to read the shared catalog folder: {e}"
+        ) from e
+
+    removed_ids: List[str] = []
+    already_missing_ids: List[str] = []
+    failed_ids: List[str] = []
+    failed_reasons: Dict[str, str] = {}
+
+    known_ids = set(working_catalog.projects.keys())
+    for project_id in selected_ids:
+        if project_id not in known_ids:
+            already_missing_ids.append(project_id)
+            continue
+
         try:
-            state.catalog = load_shared_catalog(state.shared_catalog_dir)
+            deleted = delete_shared_project(state.shared_catalog_dir, project_id)
         except PermissionError:
-            ui.notify(
-                "Project was already removed, but the app has no permission to refresh the shared catalog.",
-                type="warning",
-            )
-            return
-        state.ensure_valid_project_selection()
-        state.ensure_valid_index_set_selection()
-        ui.notify(
-            f"Project '{project_id}' was already removed from the shared catalog. Refreshed local view.",
-            type="warning",
-        )
-        save_plan(state)
-        return
+            failed_ids.append(project_id)
+            failed_reasons[project_id] = "No permission to remove the shared project file."
+            continue
+        except OSError as e:
+            failed_ids.append(project_id)
+            failed_reasons[project_id] = str(e)
+            continue
+
+        if deleted:
+            removed_ids.append(project_id)
+            known_ids.discard(project_id)
+        else:
+            already_missing_ids.append(project_id)
+            known_ids.discard(project_id)
 
     state.catalog = load_shared_catalog(state.shared_catalog_dir)
     state.ensure_valid_project_selection()
     state.ensure_valid_index_set_selection()
-
     save_plan(state)
+    return ProjectRemovalResult(
+        removed_ids=removed_ids,
+        already_missing_ids=already_missing_ids,
+        failed_ids=failed_ids,
+        failed_reasons=failed_reasons,
+    )
+
+
+def remove_project(state: RunState, project_id: str) -> ProjectRemovalResult:
+    """Remove one shared project while reusing the batch-safe core logic."""
+    return _remove_projects_core(state, [project_id])
+
+
+def remove_projects(state: RunState, project_ids: Iterable[str]) -> ProjectRemovalResult:
+    """Remove multiple shared projects in one refresh/save cycle."""
+    return _remove_projects_core(state, project_ids)
 
 
 def refresh_shared_catalog(state: RunState) -> None:
@@ -663,16 +695,26 @@ def assign_samples_to_lanes(
     save_plan(state)
 
 
-def remove_project_from_lane(state: RunState, lane_id: int, project_id: str) -> None:
-    # remove assignments in this lane for samples belonging to project
+def remove_projects_from_lane(
+    state: RunState,
+    lane_id: int,
+    project_ids: Iterable[str],
+) -> LaneProjectRemovalResult:
+    """Remove one or more selected projects from a single lane efficiently."""
     lane_id = int(lane_id)
+    selected_ids = set(_normalize_project_ids(project_ids))
+    if not selected_ids:
+        return LaneProjectRemovalResult()
+
+    removed_ids: Set[str] = set()
     to_del: List[str] = []
     for uid, per_lane in state.assignments.items():
         pid, _sid = split_sample_uid(uid)
-        if pid != project_id:
+        if pid not in selected_ids:
             continue
         if lane_id in per_lane:
             del per_lane[lane_id]
+            removed_ids.add(pid)
         if not per_lane:
             to_del.append(uid)
 
@@ -687,10 +729,11 @@ def remove_project_from_lane(state: RunState, lane_id: int, project_id: str) -> 
     # clean related messages in Messages panel
     state.messages = [
         m for m in state.messages
-        if not (m.lane == lane_id and m.project_id == project_id)
+        if not (m.lane == lane_id and (m.project_id or "") in selected_ids)
     ]
 
     save_plan(state)
+    return LaneProjectRemovalResult(removed_ids=sorted(removed_ids))
 
 
 def clear_lane(state: RunState, lane_id: int) -> None:
